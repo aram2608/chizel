@@ -1,2 +1,2 @@
-pub const ArgParser = @import("yazap/ArgParser.zig");
-pub const ParseResult = @import("yazap/ParseResult.zig");
+pub const ArgParser = @import("chizel/ArgParser.zig");
+pub const ParseResult = @import("chizel/ParseResult.zig");

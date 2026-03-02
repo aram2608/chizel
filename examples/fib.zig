@@ -1,5 +1,5 @@
 const std = @import("std");
-const yazap = @import("yazap");
+const chizel = @import("chizel");
 
 fn fibonacci(range: i32) i32 {
     if (range <= 1) return range;
@@ -21,7 +21,7 @@ pub fn main() !void {
 
     var args = try std.process.ArgIterator.initWithAllocator(allocator);
     defer args.deinit();
-    var parser = try yazap.ArgParser.init(allocator, args);
+    var parser = try chizel.ArgParser.init(allocator, args);
     defer parser.deinit();
 
     try parser.addOption("foo", .int, "The fibonacci index to compute");

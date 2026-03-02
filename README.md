@@ -8,30 +8,30 @@ Chizel. A simple CLI argument parser for Zig supporting `bool`, `i32`, `f32`, `[
 zig fetch --save "git+https://github.com/aram2608/chizel#main"
 ```
 
-This adds yazap to your `build.zig.zon`. Then wire it into your `build.zig`:
+This adds chizel to your `build.zig.zon`. Then wire it into your `build.zig`:
 
 ```zig
-const yazap = b.dependency("yazap", .{
+const chizel = b.dependency("chizel", .{
     .target = target,
     .optimize = optimize,
 });
 
 // Add the import to your executable or library module
-exe.root_module.addImport("yazap", yazap.module("yazap"));
+exe.root_module.addImport("chizel", chizel.module("chizel"));
 ```
 
 ## Usage
 
 ```zig
 const std = @import("std");
-const yazap = @import("yazap");
+const chizel = @import("chizel");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
     var args = try std.process.ArgIterator.initWithAllocator(allocator);
     defer args.deinit();
-    var parser = try yazap.ArgParser.init(allocator, args);
+    var parser = try chizel.ArgParser.init(allocator, args);
     defer parser.deinit();
 
     try parser.addOption("verbose", .boolean, "Enable verbose output");

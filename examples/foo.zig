@@ -1,5 +1,5 @@
 const std = @import("std");
-const yazap = @import("yazap");
+const chizel = @import("chizel");
 
 fn foo() void {
     std.debug.print("FOOOOOOOOOOO\n", .{});
@@ -14,7 +14,7 @@ pub fn main() !void {
 
     var args = try std.process.ArgIterator.initWithAllocator(allocator);
     defer args.deinit();
-    var parser = try yazap.ArgParser.init(allocator, args);
+    var parser = try chizel.ArgParser.init(allocator, args);
     defer parser.deinit();
 
     try parser.addOption("foo", .boolean, "Run foo");
