@@ -25,7 +25,7 @@ pub fn main() !void {
     var result = try parser.parse();
     defer result.deinit();
 
-    try parser.createAutoCompletion(.fish);
+    try parser.createAutoCompletion(.zsh);
 
     if (result.hadHelp()) {
         try result.printHelp();

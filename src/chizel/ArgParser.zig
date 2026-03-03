@@ -405,6 +405,7 @@ fn parseEnvValue(gpa: Allocator, tag: Option.Tag, raw: []const u8) !Option.Value
 }
 
 fn buildHelpMessage(self: *Parser) ![]u8 {
+    const prog = std.fs.path.basename(self.program_name);
     const prefix = "--";
     const col_gap: usize = 2;
     // Short-flag column: "-s, " (4 chars) or "    " (4-space padding).
@@ -413,7 +414,7 @@ fn buildHelpMessage(self: *Parser) ![]u8 {
     var buff = std.Io.Writer.Allocating.init(self.gpa);
     errdefer buff.deinit();
 
-    try buff.writer.print("Usage: {s} [OPTIONS]\nOptions:\n", .{self.program_name});
+    try buff.writer.print("Usage: {s} [OPTIONS]\nOptions:\n", .{prog});
 
     // Seed with the built-in --help so it is included in alignment calculations.
     var max_left: usize = short_col + prefix.len + "help".len;
@@ -470,7 +471,7 @@ pub fn createAutoCompletion(self: *Parser, target: AutoCompTarget) !void {
     return switch (target) {
         .fish => self.createFishCompletion(),
         .bash => self.createBashCompletion(),
-        .zsh => error.NotImplemented,
+        .zsh => self.createZshCompletion(),
     };
 }
 
@@ -545,6 +546,47 @@ fn createFishCompletion(self: *Parser) !void {
 
     var name_buf: [256]u8 = undefined;
     const filename = try std.fmt.bufPrint(&name_buf, "{s}.fish", .{prog});
+    const file = try std.fs.cwd().createFile(filename, .{});
+    defer file.close();
+
+    const temp = try buff.toOwnedSlice();
+    defer self.gpa.free(temp);
+    try file.writeAll(temp);
+}
+
+fn createZshCompletion(self: *Parser) !void {
+    const prog = std.fs.path.basename(self.program_name);
+    var buff = std.Io.Writer.Allocating.init(self.gpa);
+    defer buff.deinit();
+
+    try buff.writer.print("#compdef {s}\n\n", .{prog});
+    try buff.writer.print("_{s}() {{\n", .{prog});
+    try buff.writer.print("    _arguments -s -w \\\n", .{});
+
+    for (self.option_order.items) |name| {
+        const opt = self.options.get(name).?;
+        const help = opt.help;
+
+        if (opt.short) |s| {
+            switch (opt.tag) {
+                .boolean => try buff.writer.print("        '(-{c} --{s})'{{-{c},--{s}}}'[{s}]' \\\n", .{ s, name, s, name, help }),
+                .string_slice => try buff.writer.print("        '*'{{-{c},--{s}}}'[{s}]:value: ' \\\n", .{ s, name, help }),
+                .float, .int, .string => try buff.writer.print("        '(-{c} --{s})'{{-{c},--{s}}}'[{s}]:value: ' \\\n", .{ s, name, s, name, help }),
+            }
+        } else {
+            switch (opt.tag) {
+                .boolean => try buff.writer.print("        '--{s}[{s}]' \\\n", .{ name, help }),
+                .string_slice => try buff.writer.print("        '*--{s}[{s}]:value: ' \\\n", .{ name, help }),
+                .float, .int, .string => try buff.writer.print("        '--{s}[{s}]:value: ' \\\n", .{ name, help }),
+            }
+        }
+    }
+
+    try buff.writer.print("        '--help[Print this help message]' && return 0\n", .{});
+    try buff.writer.print("}}\n", .{});
+
+    var name_buf: [256]u8 = undefined;
+    const filename = try std.fmt.bufPrint(&name_buf, "_{s}", .{prog});
     const file = try std.fs.cwd().createFile(filename, .{});
     defer file.close();
 
