@@ -64,6 +64,7 @@ pub fn init(gpa: Allocator, args: ArgIterator) !Parser {
     var pos: usize = 0;
     var temp_args = args;
     const name = temp_args.next().?; // argv[0]
+
     while (temp_args.next()) |arg| {
         if (pos + arg.len + 1 > temp.len) return error.ArgumentBufferOverflow;
         @memcpy(temp[pos..][0..arg.len], arg);
@@ -466,35 +467,90 @@ fn buildHelpMessage(self: *Parser) ![]u8 {
 }
 
 pub fn createAutoCompletion(self: *Parser, target: AutoCompTarget) !void {
-    try switch (target) {
+    return switch (target) {
         .fish => self.createFishCompletion(),
-        else => unreachable,
+        .bash => self.createBashCompletion(),
+        .zsh => error.NotImplemented,
     };
 }
 
-fn createFishCompletion(self: *Parser) !void {
+fn createBashCompletion(self: *Parser) !void {
+    const prog = std.fs.path.basename(self.program_name);
     var buff = std.Io.Writer.Allocating.init(self.gpa);
     defer buff.deinit();
 
-    try buff.writer.print("~/.config/fish/completions/{s}.fish\n", .{self.program_name});
+    try buff.writer.print("# Source this in ~/.bashrc or place in /etc/bash_completion.d/{s}\n", .{prog});
+    try buff.writer.print("_{s}() {{\n", .{prog});
+    try buff.writer.print("    local cur prev opts\n", .{});
+    try buff.writer.print("    _init_completion || return\n", .{});
 
+    try buff.writer.print("    opts=\"--help -h", .{});
     for (self.option_order.items) |name| {
         const opt = self.options.get(name).?;
+        try buff.writer.print(" --{s}", .{name});
+        if (opt.short) |s| try buff.writer.print(" -{c}", .{s});
+    }
+    try buff.writer.print("\"\n", .{});
 
-        if (opt.short) |s| {
-            try buff.writer.print("complete -c {s} -s {c} -l {s}  -d \"{s}\"\n", .{ self.program_name, s, name, opt.help });
-        } else {
-            try buff.writer.print("complete -c {s} -l {s}  -d \"{s}\"\n", .{ self.program_name, name, opt.help });
+    try buff.writer.print("    case \"$prev\" in\n", .{});
+    for (self.option_order.items) |name| {
+        const opt = self.options.get(name).?;
+        switch (opt.tag) {
+            .float, .int, .string, .string_slice => {
+                if (opt.short) |s| {
+                    try buff.writer.print("        --{s}|-{c})\n", .{ name, s });
+                } else {
+                    try buff.writer.print("        --{s})\n", .{name});
+                }
+                try buff.writer.print("            return ;;\n", .{});
+            },
+            .boolean => continue,
         }
     }
+    try buff.writer.print("    esac\n", .{});
 
-    var cwd = std.fs.cwd();
-    var file = try cwd.createFile("text.fish", .{});
+    try buff.writer.print("    COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n", .{});
+    try buff.writer.print("}}\n", .{});
+    try buff.writer.print("complete -F _{s} {s}\n", .{ prog, prog });
+
+    var name_buf: [256]u8 = undefined;
+    const filename = try std.fmt.bufPrint(&name_buf, "{s}.bash", .{prog});
+    const file = try std.fs.cwd().createFile(filename, .{});
     defer file.close();
 
     const temp = try buff.toOwnedSlice();
-    _ = try file.write(temp);
-    self.gpa.free(temp);
+    defer self.gpa.free(temp);
+    try file.writeAll(temp);
+}
+
+fn createFishCompletion(self: *Parser) !void {
+    const prog = std.fs.path.basename(self.program_name);
+    var buff = std.Io.Writer.Allocating.init(self.gpa);
+    defer buff.deinit();
+
+    try buff.writer.print("# ~/.config/fish/completions/{s}.fish\n", .{prog});
+
+    for (self.option_order.items) |name| {
+        const opt = self.options.get(name).?;
+        // -f disables file completion for the flag itself.
+        // -r additionally marks that the option requires an argument.
+        const kind: []const u8 = if (opt.tag == .boolean) "-f" else "-r -f";
+        if (opt.short) |s| {
+            try buff.writer.print("complete -c {s} -s {c} -l {s} {s} -d \"{s}\"\n", .{ prog, s, name, kind, opt.help });
+        } else {
+            try buff.writer.print("complete -c {s} -l {s} {s} -d \"{s}\"\n", .{ prog, name, kind, opt.help });
+        }
+    }
+    try buff.writer.print("complete -c {s} -s h -l help -f -d \"Print help\"\n", .{prog});
+
+    var name_buf: [256]u8 = undefined;
+    const filename = try std.fmt.bufPrint(&name_buf, "{s}.fish", .{prog});
+    const file = try std.fs.cwd().createFile(filename, .{});
+    defer file.close();
+
+    const temp = try buff.toOwnedSlice();
+    defer self.gpa.free(temp);
+    try file.writeAll(temp);
 }
 
 fn typeHint(tag: Option.Tag) []const u8 {

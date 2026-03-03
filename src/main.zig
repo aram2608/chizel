@@ -16,7 +16,6 @@ pub fn main() !void {
         .tag = .boolean,
         .short = 'f',
         .default = .{ .boolean = true },
-        .required = true,
         .help = "Foo man",
     });
     try parser.addOption(.{ .name = "bar", .tag = .boolean, .help = "Bar bro" });
