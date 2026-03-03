@@ -467,6 +467,13 @@ fn buildHelpMessage(self: *Parser) ![]u8 {
     return buff.toOwnedSlice();
 }
 
+/// Creates completion commands for an `AutoCompTarget`.
+/// The file is produced in the current working directory.
+///
+/// Targets:
+///     fish
+///     bash
+///     zsh
 pub fn createAutoCompletion(self: *Parser, target: AutoCompTarget) !void {
     return switch (target) {
         .fish => self.createFishCompletion(),
