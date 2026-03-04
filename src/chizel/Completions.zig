@@ -27,10 +27,10 @@ pub fn init(gpa: Allocator, program_name: []const u8) !Completions {
 pub fn initFromParser(gpa: Allocator, parser: *ArgParser) !Completions {
     return .{
         .gpa = gpa,
-        .option_order = parser.option_order.clone(gpa),
-        .options = parser.options.clone(),
+        .option_order = try parser.option_order.clone(gpa),
+        .options = try parser.options.clone(),
         .program_name = try gpa.dupe(u8, parser.program_name),
-        .short_map = parser.short_map.clone(),
+        .short_map = try parser.short_map.clone(),
     };
 }
 

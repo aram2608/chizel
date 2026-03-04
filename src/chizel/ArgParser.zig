@@ -32,11 +32,6 @@ const isAlphanumeric = std.ascii.isAlphanumeric;
 const isAlphabetic = std.ascii.isAlphabetic;
 const eqlIgnoreCase = std.ascii.eqlIgnoreCase;
 
-const NegationState = enum {
-    none,
-    negate,
-};
-
 /// A slice-backed token source used by `initFromTokens` for tests.
 const SliceIter = struct {
     tokens: []const []const u8,
@@ -78,7 +73,6 @@ option_order: std.ArrayList([]const u8) = .empty,
 allow_unknown: bool = false,
 unknown_options: std.ArrayList([]const u8) = .empty,
 parsed: bool = false,
-negate: NegationState = .none,
 
 /// Create a parser from a `std.process.ArgIterator`.
 ///
@@ -227,6 +221,10 @@ pub fn parse(self: *Parser) !ParseResult {
     errdefer parse_result.deinit();
 
     while (self.nextArg()) |arg| {
+        if (std.mem.eql(u8, arg, "--")) {
+            while (self.nextArg()) |pos| try parse_result.positionals.append(self.gpa, pos);
+            break;
+        }
         if (startsWith(u8, arg, "--")) {
             var key = arg[2..];
 
@@ -241,12 +239,12 @@ pub fn parse(self: *Parser) !ParseResult {
             const parse_attempt = self.options.getPtr(key);
             if (parse_attempt) |option| {
                 if (is_negated and option.tag != .boolean) {
+                    _ = try self.parsePayload(option.tag, false);
                     try self.unknown_options.append(self.gpa, key);
                     continue;
                 }
-                if (is_negated) self.negate = .negate;
                 option.count += 1;
-                const value = try self.parsePayload(option.tag);
+                const value = try self.parsePayload(option.tag, is_negated);
 
                 if (option.validate) |validate_fn| {
                     if (!validate_fn(value)) return error.ValidationFailed;
@@ -273,7 +271,7 @@ pub fn parse(self: *Parser) !ParseResult {
             if (self.short_map.get(short_char)) |long_name| {
                 const option = self.options.getPtr(long_name).?;
                 option.count += 1;
-                const value = try self.parsePayload(option.tag);
+                const value = try self.parsePayload(option.tag, false);
 
                 if (option.validate) |validate_fn| {
                     if (!validate_fn(value)) return error.ValidationFailed;
@@ -344,23 +342,14 @@ fn nextArg(self: *Parser) ?[]const u8 {
     return self.args.next();
 }
 
-fn parsePayload(self: *Parser, tag: Option.Tag) !Option.Value {
+fn parsePayload(self: *Parser, tag: Option.Tag, negated: bool) !Option.Value {
     return switch (tag) {
-        .boolean => .{ .boolean = self.parseBool() },
+        .boolean => .{ .boolean = !negated },
         .int => .{ .int = try self.parseInt() },
         .float => .{ .float = try self.parseFloat() },
         .string => .{ .string = try self.parseString() },
         .string_slice => .{ .string_slice = try self.parseStringSlice() },
     };
-}
-
-fn parseBool(self: *Parser) bool {
-    const result = switch (self.negate) {
-        .negate => false,
-        .none => true,
-    };
-    self.negate = .none;
-    return result;
 }
 
 fn parseString(self: *Parser) ![]const u8 {

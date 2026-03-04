@@ -9,7 +9,8 @@
 //!
 //! ## ZiggyParse — quick start
 //!
-//! Define your options as a struct with defaults and parse in three lines:
+//! Define your options as a struct with defaults, a parallel config struct for
+//! per-flag metadata, then parse:
 //!
 //! ```zig
 //! const chizel = @import("chizel");
@@ -17,18 +18,28 @@
 //!
 //! const Opts = struct {
 //!     host: []const u8 = "localhost",
-//!     port: u16 = 8080,
-//!     verbose: bool = false,
+//!     port: u16        = 8080,
+//!     verbose: bool    = false,
+//! };
+//!
+//! const FieldCfg = struct { short: ?[]const u8 = null };
+//! const OptsCfg = struct {
+//!     host:    FieldCfg = .{ .short = "h" },
+//!     port:    FieldCfg = .{ .short = "p" },
+//!     verbose: FieldCfg = .{},
 //! };
 //!
 //! var args = try ArgIterator.initWithAllocator(allocator);
 //! defer args.deinit();
 //!
-//! var arena = std.heap.ArenaAllocator.init(allocator);
-//! var parser = chizel.ZiggyParse(Opts, *ArgIterator).init(&args, arena);
+//! const arena = std.heap.ArenaAllocator.init(allocator);
+//! var parser = chizel.ZiggyParse(Opts, OptsCfg, *ArgIterator).init(&args, arena, false);
 //! defer parser.deinit();
 //!
-//! const opts = try parser.parse();
+//! const result = try parser.parse();
+//! // result.prog         — argv[0]
+//! // result.opts         — populated Opts struct
+//! // result.positionals  — non-flag tokens
 //! ```
 //!
 //! ## ArgParser — quick start
