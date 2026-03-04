@@ -8,7 +8,7 @@
 //! var args = try std.process.ArgIterator.initWithAllocator(allocator);
 //! defer args.deinit();
 //!
-//! var parser = try chizel.ArgParser.init(allocator, args);
+//! var parser = try chizel.ArgParser.init(allocator, args, .{ .allow_unknown = false });
 //! defer parser.deinit();
 //!
 //! try parser.addOption(.{ .name = "port", .tag = .int, .default = .{ .int = 8080 } });
@@ -33,7 +33,7 @@
 //! values.  Always deinit in reverse declaration order:
 //!
 //! ```zig
-//! var parser = try chizel.ArgParser.init(allocator, args);
+//! var parser = try chizel.ArgParser.init(allocator, args, .{ .allow_unknown = false });
 //! defer parser.deinit();       // runs second — correct
 //!
 //! var result = try parser.parse();
@@ -53,3 +53,9 @@
 pub const ArgParser = @import("chizel/ArgParser.zig");
 pub const ParseResult = @import("chizel/ParseResult.zig");
 pub const Option = @import("chizel/Option.zig");
+pub const Completions = @import("chizel/Completions.zig");
+pub const QuickParse = @import("chizel/QuickParse.zig");
+
+test {
+    _ = @import("chizel/tests.zig");
+}

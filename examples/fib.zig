@@ -21,7 +21,7 @@ pub fn main() !void {
 
     var args = try std.process.ArgIterator.initWithAllocator(allocator);
     defer args.deinit();
-    var parser = try chizel.ArgParser.init(allocator, args);
+    var parser = try chizel.ArgParser.init(allocator, args, .{ .allow_unknown = false });
     defer parser.deinit();
 
     try parser.addOption(.{
@@ -44,7 +44,7 @@ pub fn main() !void {
         return;
     }
 
-    if (result.getInt("foo")) |num| {
+    if (result.getInt("fib")) |num| {
         const fib = fibonacci(num);
         std.debug.print("The {} fibonacci number is {}\n", .{ num, fib });
     }

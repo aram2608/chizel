@@ -18,7 +18,7 @@
 //!
 //! Call `parse()` exactly once.  `deinit()` must be called *after* the
 //! corresponding `ParseResult.deinit()` because `string` and `string_slice`
-//! values in the result point into the parser's internal buffer.
+//! values in the result point into the process argv or environment block.
 
 const std = @import("std");
 const ArgIterator = std.process.ArgIterator;
@@ -28,53 +28,101 @@ const Option = @import("Option.zig");
 const Parser = @This();
 const OptionsMap = std.StringHashMap(Option);
 const startsWith = std.mem.startsWith;
+const isAlphanumeric = std.ascii.isAlphanumeric;
+const isAlphabetic = std.ascii.isAlphabetic;
+const eqlIgnoreCase = std.ascii.eqlIgnoreCase;
 
 const NegationState = enum {
     none,
     negate,
 };
 
+/// A slice-backed token source used by `initFromTokens` for tests.
+const SliceIter = struct {
+    tokens: []const []const u8,
+    index: usize,
+
+    fn next(self: *SliceIter) ?[]const u8 {
+        if (self.index >= self.tokens.len) return null;
+        defer self.index += 1;
+        return self.tokens[self.index];
+    }
+};
+
+/// Union over the two possible token sources: a real `ArgIterator` (production)
+/// or a slice (tests / `initFromTokens`).
+const ArgsSource = union(enum) {
+    iter: ArgIterator,
+    slice: SliceIter,
+
+    fn next(self: *ArgsSource) ?[]const u8 {
+        return switch (self.*) {
+            .iter => |*it| it.next(),
+            .slice => |*it| it.next(),
+        };
+    }
+};
+
+pub const ParserConfig = struct {
+    allow_unknown: bool,
+};
+
 gpa: Allocator,
 options: OptionsMap,
 short_map: std.AutoHashMap(u8, []const u8),
-buffer: []const u8,
-start: usize = 0,
-current: usize = 0,
+args: ArgsSource,
+/// One-token lookahead used by `parseStringSlice` to put back a flag token.
+peek: ?[]const u8 = null,
 program_name: []const u8 = "",
 option_order: std.ArrayList([]const u8) = .empty,
+allow_unknown: bool = false,
 unknown_options: std.ArrayList([]const u8) = .empty,
 parsed: bool = false,
 negate: NegationState = .none,
 
 /// Create a parser from a `std.process.ArgIterator`.
 ///
-/// `args` is taken by value and fully consumed: `argv[0]` is stored as the
-/// program name, and the remaining tokens are joined into a single internal
-/// buffer separated by spaces.  Do not call `args.next()` after passing it
-/// here; the iterator is exhausted.  Continue to call `args.deinit()` via
-/// `defer` in the caller — it is safe to deinit an exhausted iterator.
+/// `args` is taken by value.  `argv[0]` is consumed immediately as the
+/// program name.  The remaining tokens are left in the iterator for `parse()`.
+/// Do not call `args.next()` after passing it here.  Continue to call
+/// `args.deinit()` via `defer` in the caller — it is safe to deinit an
+/// exhausted iterator.
 ///
 /// The caller must keep `gpa` alive for the lifetime of both this parser and
 /// any `ParseResult` it produces.
-///
-/// Returns `error.ArgumentBufferOverflow` when the joined argument string
-/// (all tokens plus one separator byte per token) exceeds 4096 bytes.
-pub fn init(gpa: Allocator, args: ArgIterator) !Parser {
-    var temp: [4096]u8 = undefined;
-    var pos: usize = 0;
-    var temp_args = args;
-    const name = temp_args.next().?; // argv[0]
-
-    while (temp_args.next()) |arg| {
-        if (pos + arg.len + 1 > temp.len) return error.ArgumentBufferOverflow;
-        @memcpy(temp[pos..][0..arg.len], arg);
-        temp[pos + arg.len] = ' ';
-        pos += arg.len + 1;
-    }
+pub fn init(gpa: Allocator, args: ArgIterator, config: ParserConfig) !Parser {
+    var mut_args = args;
+    const name = mut_args.next().?; // consume argv[0]
     return .{
         .gpa = gpa,
         .program_name = try gpa.dupe(u8, name),
-        .buffer = try gpa.dupe(u8, temp[0..pos]),
+        .allow_unknown = config.allow_unknown,
+        .args = .{ .iter = mut_args },
+        .options = OptionsMap.init(gpa),
+        .short_map = std.AutoHashMap(u8, []const u8).init(gpa),
+    };
+}
+
+/// Create a parser from a slice of pre-tokenized strings.
+///
+/// `tokens[0]` is used as the program name (`argv[0]`).  `tokens[1..]` are
+/// the arguments to be parsed.  This is the preferred constructor for tests
+/// because it avoids `std.process.ArgIterator` entirely.
+///
+/// Example:
+/// ```zig
+/// var parser = try ArgParser.initFromTokens(allocator,
+///     &.{ "myapp", "--port", "8080" },
+///     .{ .allow_unknown = false });
+/// ```
+pub fn initFromTokens(gpa: Allocator, tokens: []const []const u8, config: ParserConfig) !Parser {
+    const name: []const u8 = if (tokens.len > 0) tokens[0] else "";
+    const rest: []const []const u8 = if (tokens.len > 1) tokens[1..] else &.{};
+    return .{
+        .gpa = gpa,
+        .program_name = try gpa.dupe(u8, name),
+        .allow_unknown = config.allow_unknown,
+        .args = .{ .slice = .{ .tokens = rest, .index = 0 } },
         .options = OptionsMap.init(gpa),
         .short_map = std.AutoHashMap(u8, []const u8).init(gpa),
     };
@@ -83,9 +131,7 @@ pub fn init(gpa: Allocator, args: ArgIterator) !Parser {
 /// Free all resources owned by the parser.
 ///
 /// Must be called *after* `ParseResult.deinit()` for any result produced by
-/// this parser, because `string` and `string_slice` values in the result are
-/// slices into the parser's internal buffer.  Freeing the parser first leaves
-/// those slices dangling.
+/// this parser.
 ///
 /// The typical pattern using `defer` is safe by default because `defer`
 /// unwinds in reverse order:
@@ -98,7 +144,6 @@ pub fn init(gpa: Allocator, args: ArgIterator) !Parser {
 /// defer result.deinit();        // deferred second, runs first ✓
 /// ```
 pub fn deinit(self: *Parser) void {
-    self.gpa.free(self.buffer);
     self.gpa.free(self.program_name);
     self.option_order.deinit(self.gpa);
     self.options.deinit();
@@ -146,7 +191,7 @@ pub fn addOption(self: *Parser, config: Option.Config) !void {
     });
 }
 
-/// Parse the argument buffer and return a `ParseResult`.
+/// Parse the argument iterator and return a `ParseResult`.
 ///
 /// May only be called once.  Register all options with `addOption` first.
 ///
@@ -154,7 +199,7 @@ pub fn addOption(self: *Parser, config: Option.Config) !void {
 ///
 /// For each option, the first source that provides a value wins:
 ///
-///   1. CLI flag (`--name value`)
+///   1. CLI flag (`--name value` or `-s value`)
 ///   2. Environment variable (`Option.Config.env`)
 ///   3. Static default (`Option.Config.default`)
 ///
@@ -181,23 +226,10 @@ pub fn parse(self: *Parser) !ParseResult {
     var parse_result = ParseResult.init(self.gpa);
     errdefer parse_result.deinit();
 
-    while (!self.isEnd()) {
-        self.start = self.current;
-        const c = self.advance();
+    while (self.nextArg()) |arg| {
+        if (startsWith(u8, arg, "--")) {
+            var key = arg[2..];
 
-        if (c == ' ') continue;
-
-        if (c == '-') {
-            var key = self.parseOption();
-
-            // Resolve short options
-            if (key.len == 1) {
-                if (self.short_map.get(key[0])) |long_name| {
-                    key = long_name;
-                }
-            }
-
-            // Help is always reserved
             if (std.mem.eql(u8, key, "help")) {
                 parse_result.had_help = true;
                 continue;
@@ -214,12 +246,6 @@ pub fn parse(self: *Parser) !ParseResult {
                 }
                 if (is_negated) self.negate = .negate;
                 option.count += 1;
-                // Non-boolean options require a space then their value.
-                if (option.tag != .boolean) {
-                    if (self.isEnd() or self.buffer[self.current] != ' ') return error.MissingValue;
-                    _ = self.advance(); // skip the space
-                }
-                self.start = self.current;
                 const value = try self.parsePayload(option.tag);
 
                 if (option.validate) |validate_fn| {
@@ -233,14 +259,38 @@ pub fn parse(self: *Parser) !ParseResult {
                 }
                 try parse_result.results.put(key, .{ .value = value, .count = option.count });
             } else {
-                try self.unknown_options.append(self.gpa, key);
+                if (self.allow_unknown)
+                    try self.unknown_options.append(self.gpa, key)
+                else
+                    return error.UnknownOption;
+            }
+        } else if (startsWith(u8, arg, "-") and arg.len == 2 and isAlphanumeric(arg[1])) {
+            const short_char = arg[1];
+            if (short_char == 'h') {
+                parse_result.had_help = true;
+                continue;
+            }
+            if (self.short_map.get(short_char)) |long_name| {
+                const option = self.options.getPtr(long_name).?;
+                option.count += 1;
+                const value = try self.parsePayload(option.tag);
+
+                if (option.validate) |validate_fn| {
+                    if (!validate_fn(value)) return error.ValidationFailed;
+                }
+
+                if (parse_result.results.get(long_name)) |old| {
+                    if (old.value == .string_slice) self.gpa.free(old.value.string_slice);
+                }
+                try parse_result.results.put(long_name, .{ .value = value, .count = option.count });
+            } else {
+                if (self.allow_unknown)
+                    try self.unknown_options.append(self.gpa, arg[1..])
+                else
+                    return error.UnknownOption;
             }
         } else {
-            // collect the rest of the token.
-            while (!self.isEnd() and !self.checkBuffer(' ')) {
-                _ = self.advance();
-            }
-            try parse_result.positionals.append(self.gpa, self.buffer[self.start..self.current]);
+            try parse_result.positionals.append(self.gpa, arg);
         }
     }
 
@@ -284,22 +334,14 @@ pub fn parse(self: *Parser) !ParseResult {
     return parse_result;
 }
 
-fn advance(self: *Parser) u8 {
-    if (self.isEnd()) return 0;
-    const c: u8 = self.buffer[self.current];
-    self.current += 1;
-    return c;
-}
-
-/// Advance past all characters of an option name and return the name slice
-/// with its leading dash(es) stripped.
-fn parseOption(self: *Parser) []const u8 {
-    while (!self.isEnd() and !self.checkBuffer(' ')) {
-        _ = self.advance();
+/// Return the next token from the iterator, checking the one-token lookahead
+/// buffer first.
+fn nextArg(self: *Parser) ?[]const u8 {
+    if (self.peek) |token| {
+        self.peek = null;
+        return token;
     }
-    const prefix_len: usize =
-        if (self.start + 1 < self.buffer.len and self.buffer[self.start + 1] == '-') 2 else 1;
-    return self.buffer[self.start + prefix_len .. self.current];
+    return self.args.next();
 }
 
 fn parsePayload(self: *Parser, tag: Option.Tag) !Option.Value {
@@ -322,73 +364,53 @@ fn parseBool(self: *Parser) bool {
 }
 
 fn parseString(self: *Parser) ![]const u8 {
-    const arg = self.nextToken();
+    const arg = self.nextArg() orelse return error.MissingValue;
     if (arg.len == 0) return error.MissingValue;
     return arg;
 }
 
 fn parseInt(self: *Parser) !i64 {
-    return std.fmt.parseInt(i64, self.nextToken(), 10);
+    const arg = self.nextArg() orelse return error.MissingValue;
+    return std.fmt.parseInt(i64, arg, 10);
 }
 
 fn parseFloat(self: *Parser) !f64 {
-    return std.fmt.parseFloat(f64, self.nextToken());
+    const arg = self.nextArg() orelse return error.MissingValue;
+    return std.fmt.parseFloat(f64, arg);
 }
 
 fn parseStringSlice(self: *Parser) ![][]const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     errdefer list.deinit(self.gpa);
 
-    // Collect tokens until end of buffer or something that looks like a new
-    // flag.  looksLikeOption() permits values such as "-1" or "-3.14" to be
+    // Consume tokens until end of args or a token that looks like a new flag.
+    // looksLikeOptionToken() permits values such as "-1" or "-3.14" to be
     // part of the slice while still stopping on "--flag" or "-f".
-    while (!self.isEnd() and !self.looksLikeOption()) {
-        self.start = self.current;
-        const token = self.nextToken();
-        if (token.len > 0) try list.append(self.gpa, token);
-        if (!self.isEnd()) _ = self.advance(); // skip the trailing space
+    while (self.nextArg()) |token| {
+        if (looksLikeOptionToken(token)) {
+            self.peek = token; // put it back for the outer parse loop
+            break;
+        }
+        try list.append(self.gpa, token);
     }
 
     if (list.items.len == 0) return error.MissingValue;
     return list.toOwnedSlice(self.gpa);
 }
 
-fn nextToken(self: *Parser) []const u8 {
-    while (!self.isEnd() and !self.checkBuffer(' ')) {
-        _ = self.advance();
-    }
-    return self.buffer[self.start..self.current];
-}
-
-fn checkBuffer(self: *const Parser, c: u8) bool {
-    return self.peekBuffer() == c;
-}
-
-fn peekBuffer(self: *const Parser) u8 {
-    if (self.current >= self.buffer.len) return 0;
-    return self.buffer[self.current];
-}
-
-fn isEnd(self: *const Parser) bool {
-    return self.current >= self.buffer.len;
-}
-
-/// Returns true when the current position looks like the start of a flag
-/// (`--anything` or `-<alpha>`).  Values such as `-1` or `-3.14` return false,
-/// so they are not mistakenly treated as option starters in string-slice parsing.
-fn looksLikeOption(self: *const Parser) bool {
-    if (self.current >= self.buffer.len) return false;
-    if (self.buffer[self.current] != '-') return false;
-    if (self.current + 1 >= self.buffer.len) return false;
-    const next = self.buffer[self.current + 1];
-    return next == '-' or std.ascii.isAlphabetic(next);
+/// Returns true when `token` looks like the start of a flag (`--anything` or
+/// `-<alpha>`).  Values such as `-1` or `-3.14` return false, so they are not
+/// mistakenly treated as option starters in string-slice parsing.
+fn looksLikeOptionToken(token: []const u8) bool {
+    if (!startsWith(u8, token, "-") or token.len < 2) return false;
+    return token[1] == '-' or isAlphabetic(token[1]);
 }
 
 fn parseEnvValue(gpa: Allocator, tag: Option.Tag, raw: []const u8) !Option.Value {
     return switch (tag) {
-        .boolean => .{ .boolean = std.mem.eql(u8, raw, "1") or
-            std.mem.eql(u8, raw, "true") or
-            std.mem.eql(u8, raw, "yes") },
+        .boolean => .{ .boolean = eqlIgnoreCase(raw, "1") or
+            eqlIgnoreCase(raw, "true") or
+            eqlIgnoreCase(raw, "yes") },
         .int => .{ .int = try std.fmt.parseInt(i64, raw, 10) },
         .float => .{ .float = try std.fmt.parseFloat(f64, raw) },
         .string => .{ .string = raw }, // env block is valid for the process lifetime
@@ -467,141 +489,6 @@ fn buildHelpMessage(self: *Parser) ![]u8 {
     return buff.toOwnedSlice();
 }
 
-/// Creates completion commands for an `AutoCompTarget`.
-/// The file is produced in the current working directory.
-///
-/// Targets:
-///     fish
-///     bash
-///     zsh
-pub fn createAutoCompletion(self: *Parser, target: AutoCompTarget) !void {
-    return switch (target) {
-        .fish => self.createFishCompletion(),
-        .bash => self.createBashCompletion(),
-        .zsh => self.createZshCompletion(),
-    };
-}
-
-fn createBashCompletion(self: *Parser) !void {
-    const prog = std.fs.path.basename(self.program_name);
-    var buff = std.Io.Writer.Allocating.init(self.gpa);
-    defer buff.deinit();
-
-    try buff.writer.print("# Source this in ~/.bashrc or place in /etc/bash_completion.d/{s}\n", .{prog});
-    try buff.writer.print("_{s}() {{\n", .{prog});
-    try buff.writer.print("    local cur prev opts\n", .{});
-    try buff.writer.print("    _init_completion || return\n", .{});
-
-    try buff.writer.print("    opts=\"--help -h", .{});
-    for (self.option_order.items) |name| {
-        const opt = self.options.get(name).?;
-        try buff.writer.print(" --{s}", .{name});
-        if (opt.short) |s| try buff.writer.print(" -{c}", .{s});
-    }
-    try buff.writer.print("\"\n", .{});
-
-    try buff.writer.print("    case \"$prev\" in\n", .{});
-    for (self.option_order.items) |name| {
-        const opt = self.options.get(name).?;
-        switch (opt.tag) {
-            .float, .int, .string, .string_slice => {
-                if (opt.short) |s| {
-                    try buff.writer.print("        --{s}|-{c})\n", .{ name, s });
-                } else {
-                    try buff.writer.print("        --{s})\n", .{name});
-                }
-                try buff.writer.print("            return ;;\n", .{});
-            },
-            .boolean => continue,
-        }
-    }
-    try buff.writer.print("    esac\n", .{});
-
-    try buff.writer.print("    COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n", .{});
-    try buff.writer.print("}}\n", .{});
-    try buff.writer.print("complete -F _{s} {s}\n", .{ prog, prog });
-
-    var name_buf: [256]u8 = undefined;
-    const filename = try std.fmt.bufPrint(&name_buf, "{s}.bash", .{prog});
-    const file = try std.fs.cwd().createFile(filename, .{});
-    defer file.close();
-
-    const temp = try buff.toOwnedSlice();
-    defer self.gpa.free(temp);
-    try file.writeAll(temp);
-}
-
-fn createFishCompletion(self: *Parser) !void {
-    const prog = std.fs.path.basename(self.program_name);
-    var buff = std.Io.Writer.Allocating.init(self.gpa);
-    defer buff.deinit();
-
-    try buff.writer.print("# ~/.config/fish/completions/{s}.fish\n", .{prog});
-
-    for (self.option_order.items) |name| {
-        const opt = self.options.get(name).?;
-        // -f disables file completion for the flag itself.
-        // -r additionally marks that the option requires an argument.
-        const kind: []const u8 = if (opt.tag == .boolean) "-f" else "-r -f";
-        if (opt.short) |s| {
-            try buff.writer.print("complete -c {s} -s {c} -l {s} {s} -d \"{s}\"\n", .{ prog, s, name, kind, opt.help });
-        } else {
-            try buff.writer.print("complete -c {s} -l {s} {s} -d \"{s}\"\n", .{ prog, name, kind, opt.help });
-        }
-    }
-    try buff.writer.print("complete -c {s} -s h -l help -f -d \"Print help\"\n", .{prog});
-
-    var name_buf: [256]u8 = undefined;
-    const filename = try std.fmt.bufPrint(&name_buf, "{s}.fish", .{prog});
-    const file = try std.fs.cwd().createFile(filename, .{});
-    defer file.close();
-
-    const temp = try buff.toOwnedSlice();
-    defer self.gpa.free(temp);
-    try file.writeAll(temp);
-}
-
-fn createZshCompletion(self: *Parser) !void {
-    const prog = std.fs.path.basename(self.program_name);
-    var buff = std.Io.Writer.Allocating.init(self.gpa);
-    defer buff.deinit();
-
-    try buff.writer.print("#compdef {s}\n\n", .{prog});
-    try buff.writer.print("_{s}() {{\n", .{prog});
-    try buff.writer.print("    _arguments -s -w \\\n", .{});
-
-    for (self.option_order.items) |name| {
-        const opt = self.options.get(name).?;
-        const help = opt.help;
-
-        if (opt.short) |s| {
-            switch (opt.tag) {
-                .boolean => try buff.writer.print("        '(-{c} --{s})'{{-{c},--{s}}}'[{s}]' \\\n", .{ s, name, s, name, help }),
-                .string_slice => try buff.writer.print("        '*'{{-{c},--{s}}}'[{s}]:value: ' \\\n", .{ s, name, help }),
-                .float, .int, .string => try buff.writer.print("        '(-{c} --{s})'{{-{c},--{s}}}'[{s}]:value: ' \\\n", .{ s, name, s, name, help }),
-            }
-        } else {
-            switch (opt.tag) {
-                .boolean => try buff.writer.print("        '--{s}[{s}]' \\\n", .{ name, help }),
-                .string_slice => try buff.writer.print("        '*--{s}[{s}]:value: ' \\\n", .{ name, help }),
-                .float, .int, .string => try buff.writer.print("        '--{s}[{s}]:value: ' \\\n", .{ name, help }),
-            }
-        }
-    }
-
-    try buff.writer.print("        '--help[Print this help message]' && return 0\n", .{});
-    try buff.writer.print("}}\n", .{});
-
-    var name_buf: [256]u8 = undefined;
-    const filename = try std.fmt.bufPrint(&name_buf, "_{s}", .{prog});
-    const file = try std.fs.cwd().createFile(filename, .{});
-    defer file.close();
-
-    const temp = try buff.toOwnedSlice();
-    defer self.gpa.free(temp);
-    try file.writeAll(temp);
-}
-
 fn typeHint(tag: Option.Tag) []const u8 {
     return switch (tag) {
         .boolean => "",
@@ -636,9 +523,3 @@ pub fn dumpOptions(self: *const Parser, writer: anytype) !void {
         try writer.print("Key: {s} || Tag: {s}\n", .{ name, @tagName(opt.tag) });
     }
 }
-
-pub const AutoCompTarget = enum {
-    bash,
-    fish,
-    zsh,
-};
