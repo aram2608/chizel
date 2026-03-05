@@ -229,3 +229,118 @@ try parser.addOption(.{
 ```
 
 `parse()` returns `error.ValidationFailed` if the callback returns `false`.
+
+---
+
+## ZiggyParse
+
+A lighter-weight alternative to `ArgParser` for simple use cases. Define your CLI options as a plain Zig struct and ZiggyParse handles the rest — all config lives in the struct, no runtime setup required.
+
+```zig
+const std = @import("std");
+const chizel = @import("chizel");
+const ArgIterator = std.process.ArgIterator;
+
+const Opts = struct {
+    host:    []const u8 = "localhost",
+    port:    u16        = 8080,
+    verbose: bool       = false,
+
+    // Short aliases — only declare fields that need one.
+    pub const shorts = .{ .host = 'h', .port = 'p', .verbose = 'v' };
+
+    // Help text per field — used by Result.printHelp().
+    pub const help = .{
+        .host    = "Server host",
+        .port    = "Server port",
+        .verbose = "Enable verbose output",
+    };
+
+    // Parser behaviour — all fields are optional, shown here with their defaults.
+    pub const config = .{
+        .help_enabled  = true,   // intercept --help / -h → Result.had_help
+        .allow_unknown = false,  // collect unknown flags instead of erroring
+    };
+};
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    var args = try std.process.argsWithAllocator(alloc);
+    defer args.deinit();
+
+    const arena = std.heap.ArenaAllocator.init(alloc);
+    var parser = chizel.ZiggyParse(Opts, *ArgIterator).init(&args, arena);
+    defer parser.deinit();
+
+    const result = try parser.parse();
+
+    if (result.had_help) {
+        const out = try result.printHelp(alloc);
+        defer alloc.free(out);
+        std.debug.print("{s}\n", .{out});
+        return;
+    }
+
+    std.debug.print("host={s} port={} verbose={}\n", .{
+        result.opts.host,
+        result.opts.port,
+        result.opts.verbose,
+    });
+}
+```
+
+### Supported field types
+
+| Zig type              | CLI behaviour                                          |
+|-----------------------|--------------------------------------------------------|
+| `bool`                | `--flag` → `true`; `--no-flag` → `false`              |
+| `[]const u8`          | Consumes the next token                                |
+| `[]const []const u8`  | Consumes tokens until the next flag or end of args     |
+| `i*` / `u*`           | Parses the next token as an integer                    |
+| `f*`                  | Parses the next token as a float                       |
+| `?T`                  | Parses as `T` when the flag is present, else `null`    |
+
+Every field must have a default value. For logically required fields use `?T = null` — the type system then forces the caller to handle the missing case.
+
+### `pub const config` options
+
+| Field           | Default | Description |
+|-----------------|---------|-------------|
+| `help_enabled`  | `true`  | When true, `--help` and `-h` are intercepted and set `Result.had_help`. Disable to free `-h` for your own use. |
+| `allow_unknown` | `false` | When true, unrecognised flags are collected in `Result.unknown_options` instead of returning `error.UnknownOption`. |
+
+Omit `pub const config` entirely to get the defaults.
+
+### Shell completions
+
+```zig
+const script = try chizel.genCompletions(Opts, .fish, allocator, "myprog");
+defer allocator.free(script);
+// write script to ~/.config/fish/completions/myprog.fish
+```
+
+Supported targets: `.fish`, `.bash`. `.zsh` returns `error.NotImplemented`.
+
+### Errors from `parse`
+
+| Error | Cause |
+|-------|-------|
+| `error.AlreadyParsed` | `parse()` called more than once |
+| `error.MissingProgramName` | Iterator was empty (no `argv[0]`) |
+| `error.MissingValue` | A non-boolean flag had no following token |
+| `error.CannotNegate` | `--no-` applied to a non-boolean field |
+| `error.UnknownOption` | Unrecognised flag and `allow_unknown = false` |
+| `error.InvalidCharacter` / `error.Overflow` | Integer parse failure |
+
+### Lifetime
+
+All strings in `Result` are owned by the parser's arena. Access them only while the parser is alive:
+
+```zig
+var parser = chizel.ZiggyParse(Opts, *ArgIterator).init(&args, arena);
+defer parser.deinit();              // frees everything
+const result = try parser.parse(); // result borrows from arena
+```

@@ -19,14 +19,16 @@ pub fn main() !void {
     var args: ArgIterator = try std.process.argsWithAllocator(alloc);
     defer args.deinit();
     const arena = std.heap.ArenaAllocator.init(alloc);
-    var parser = chizel.ZiggyParse(Opts, *ArgIterator).init(&args, arena, false);
+    var parser = chizel.ZiggyParse(Opts, *ArgIterator).init(&args, arena);
     defer parser.deinit();
+    const buff: []const u8 = try chizel.genCompletions(Opts, .fish, alloc, "chizel");
+    defer alloc.free(buff);
+    std.debug.print("{s}\n", .{buff});
     const opts = try parser.parse();
 
     if (opts.had_help) {
-        const help = try opts.printHelp();
-        std.debug.print("{s}\n", .{help});
+        const out = try opts.printHelp(alloc);
+        std.debug.print("{s}\n", .{out});
+        alloc.free(out);
     }
-
-    std.debug.print("{}\n", .{opts});
 }

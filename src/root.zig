@@ -99,6 +99,7 @@ pub const ParseResult = @import("chizel/ParseResult.zig");
 pub const Option = @import("chizel/Option.zig");
 pub const Completions = @import("chizel/Completions.zig");
 pub const ZiggyParse = @import("chizel/ziggyparse.zig").ZiggyParse;
+pub const genCompletions = @import("chizel/ziggyparse.zig").genCompletions;
 
 test {
     _ = @import("chizel/tests.zig");
