@@ -7,6 +7,8 @@ const fields = std.meta.fields;
 const eql = std.mem.eql;
 const indexOf = std.mem.indexOf;
 
+// TODO: Add subcommands somehow
+
 /// Chizel — comptime struct-driven CLI argument parser.
 ///
 /// Define your options as a plain Zig struct with default values and Chizel handles the rest.
@@ -17,8 +19,6 @@ const indexOf = std.mem.indexOf;
 /// - `Options`   — struct whose fields define the accepted flags. Every field
 ///                 must have a default value (enforced at compile time). Optionally
 ///                 declare `pub const shorts` inside to map field names to short chars.
-/// - `IterType`  — any type with a `pub fn next(*T) ?[]const u8` method,
-///                 e.g. `*std.process.ArgIterator` or a test slice iterator.
 ///
 /// ## Defining options
 ///
@@ -52,7 +52,7 @@ const indexOf = std.mem.indexOf;
 /// defer args.deinit();
 ///
 /// const arena = std.heap.ArenaAllocator.init(allocator);
-/// var parser = Chizel(Opts, *ArgIterator).init(&args, arena);
+/// var parser = Chizel(Opts).init(&args, arena);
 /// defer parser.deinit();
 ///
 /// const result = try parser.parse();
@@ -105,15 +105,15 @@ const indexOf = std.mem.indexOf;
 /// undefined behaviour. Always `defer parser.deinit()` immediately after `init`:
 ///
 /// ```zig
-/// var parser = Chizel(Opts, *ArgIterator).init(&args, arena);
+/// var parser = Chizel(Opts).init(&args, arena);
 /// defer parser.deinit();              // runs last — correct
 /// const result = try parser.parse(); // result borrows from arena
 /// ```
-pub fn Chizel(comptime Options: type, comptime IterType: type) type {
+pub fn Chizel(comptime Options: type) type {
     if (@typeInfo(Options) != .@"struct") @compileError("Chizel: `Options` must be a struct.");
 
     // Require all Options fields to have defaults so initDefaults() is always safe.
-    inline for (std.meta.fields(Options)) |field| {
+    for (std.meta.fields(Options)) |field| {
         if (field.default_value_ptr == null) {
             @compileError("Chizel: field `" ++ field.name ++ "` must have a default value. " ++
                 "For required arguments use `?T = null`.");
@@ -133,23 +133,68 @@ pub fn Chizel(comptime Options: type, comptime IterType: type) type {
     else
         false;
 
+    if (cfg_help_enabled and @hasField(Options, "help"))
+        @compileError("Field named `help` conflicts with built-in --help handling.");
+
+    comptime {
+        if (cfg_help_enabled and @hasDecl(Options, "shorts")) {
+            for (fields(@TypeOf(Options.shorts))) |field| {
+                const s: u8 = @field(Options.shorts, field.name);
+                if (s == 'h') @compileError("Short flag 'h' conflicts with built-in --help. " ++ "Set `pub const config = .{ help_enabled = false ) }` to use -h yourself");
+            }
+        }
+    }
+
     return struct {
         arena: std.heap.ArenaAllocator,
-        iter: Iter(IterType),
+        iter: ErasedIter,
         parsed: bool = false,
         const Self = @This();
 
+        // Type erased iterator used by the parser.
+        // The type is resolved at compile time and the next function
+        // is stored as a function pointer.
+        // Very complex in the backend but this improves the usability of the
+        // library's API.
+        const ErasedIter = struct {
+            ptr: *anyopaque,
+            next_fn: *const fn (*anyopaque) ?[]const u8,
+            peeked: ?[]const u8 = null,
+
+            fn next(self: *@This()) ?[]const u8 {
+                if (self.peeked) |p| {
+                    self.peeked = null;
+                    return p;
+                }
+                return self.next_fn(self.ptr);
+            }
+
+            fn peek(self: *@This()) ?[]const u8 {
+                if (self.peeked == null) self.peeked = self.next_fn(self.ptr);
+                return self.peeked;
+            }
+        };
+
         /// Create a parser.
         ///
-        /// - `inner` — the token source; `argv[0]` is consumed on the first call to `parse()`.
+        /// - `inner` — a pointer to the token source; must outlive the parser.
+        ///             `argv[0]` is consumed on the first call to `parse()`.
         /// - `arena` — taken by value; freed by `deinit()`.
         ///
         /// Parser behaviour (help interception, unknown flag handling) is configured via
         /// `pub const config` in `Options` rather than here — see the module doc for details.
-        pub fn init(inner: IterType, arena: std.heap.ArenaAllocator) Self {
+        pub fn init(inner: anytype, arena: std.heap.ArenaAllocator) Self {
+            const T = @TypeOf(inner);
+            comptime if (@typeInfo(T) != .pointer)
+                @compileError("Chizel.init: `inner` must be a pointer to an iterator.");
+            const gen = struct {
+                fn nextFn(ptr: *anyopaque) ?[]const u8 {
+                    return @as(T, @ptrCast(@alignCast(ptr))).next();
+                }
+            };
             return .{
                 .arena = arena,
-                .iter = .{ .inner = inner },
+                .iter = .{ .ptr = @ptrCast(inner), .next_fn = gen.nextFn },
             };
         }
 
@@ -159,27 +204,6 @@ pub fn Chizel(comptime Options: type, comptime IterType: type) type {
         /// Prefer `defer parser.deinit()` immediately after `init`.
         pub fn deinit(self: *Self) void {
             self.arena.deinit();
-        }
-
-        fn Iter(comptime T: type) type {
-            return struct {
-                inner: T,
-                peeked: ?[]const u8 = null,
-
-                fn next(self: *@This()) ?[]const u8 {
-                    if (self.peeked) |peeked| {
-                        self.peeked = null;
-                        return peeked;
-                    }
-
-                    return self.inner.next();
-                }
-
-                fn peek(self: *@This()) ?[]const u8 {
-                    if (self.peeked == null) self.peeked = self.inner.next();
-                    return self.peeked;
-                }
-            };
         }
 
         /// The value returned by `parse()`.
@@ -297,15 +321,6 @@ pub fn Chizel(comptime Options: type, comptime IterType: type) type {
             }
         }
 
-        fn initDefaults() Options {
-            var val: Options = undefined;
-            inline for (fields(Options)) |field| {
-                // .? is safe — validated at comptime above that all fields have defaults.
-                @field(val, field.name) = defaultValue(field).?;
-            }
-            return val;
-        }
-
         /// Parse the argument iterator and return a `Result`.
         ///
         /// Consumes `argv[0]` as the program name, then processes remaining
@@ -334,7 +349,8 @@ pub fn Chizel(comptime Options: type, comptime IterType: type) type {
 
             const allocator = self.arena.allocator();
             self.parsed = true;
-            var defaults = initDefaults();
+            // All field are default so the Options can be initialized directly
+            var defaults: Options = .{};
             // Comptime-initialized so @field access in inline for is safe.
             var positionals: std.ArrayList([]const u8) = .empty;
             var unknown: std.ArrayList([]const u8) = .empty;
@@ -362,7 +378,7 @@ pub fn Chizel(comptime Options: type, comptime IterType: type) type {
                     const negated = startsWith(u8, key, "no-");
                     if (negated) key = key[3..];
                     var matched = false;
-                    inline for (std.meta.fields(Options)) |field| {
+                    blk: inline for (std.meta.fields(Options)) |field| {
                         if (std.mem.eql(u8, key, field.name)) {
                             const base_type = switch (@typeInfo(field.type)) {
                                 .optional => |o| o.child,
@@ -372,31 +388,54 @@ pub fn Chizel(comptime Options: type, comptime IterType: type) type {
 
                             @field(defaults, field.name) = try self.parseNext(field.type, negated, inline_val, allocator);
                             matched = true;
+                            break :blk;
                         }
                     }
                     if (!matched) {
                         if (cfg_allow_unknown) try unknown.append(allocator, key) else return error.UnknownOption;
                     }
                 } else if (startsWith(u8, opt, "-")) {
-                    const key = opt[1..];
-                    var matched = false;
-                    if (@hasDecl(Options, "shorts")) {
-                        inline for (std.meta.fields(Options)) |field| {
-                            if (@hasField(@TypeOf(Options.shorts), field.name)) {
-                                const s: u8 = @field(Options.shorts, field.name);
-                                if (key.len == 1 and key[0] == s) {
-                                    @field(defaults, field.name) = try self.parseNext(field.type, false, null, allocator);
-                                    matched = true;
+                    if (opt.len > 2) {
+                        for (opt[1..]) |o| {
+                            var matched = false;
+                            if (@hasDecl(Options, "shorts")) {
+                                inline for (fields(Options)) |field| {
+                                    if (@hasField(@TypeOf(Options.shorts), field.name)) {
+                                        const s: u8 = @field(Options.shorts, field.name);
+                                        if (o == s) {
+                                            @field(defaults, field.name) = try self.parseNext(field.type, false, null, allocator);
+                                            matched = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if (!matched) {
+                                if (cfg_allow_unknown) {
+                                    // Cast to a []u8 at dupe time
+                                    const char_str = try allocator.dupe(u8, &[_]u8{o});
+                                    try unknown.append(allocator, char_str);
+                                } else return error.UnknownOption;
+                            }
+                        }
+                    } else {
+                        const key = opt[1..];
+                        var matched = false;
+                        if (@hasDecl(Options, "shorts")) {
+                            inline for (fields(Options)) |field| {
+                                if (@hasField(@TypeOf(Options.shorts), field.name)) {
+                                    const s: u8 = @field(Options.shorts, field.name);
+                                    if (key.len == 1 and key[0] == s) {
+                                        @field(defaults, field.name) = try self.parseNext(field.type, false, null, allocator);
+                                        matched = true;
+                                    }
                                 }
                             }
                         }
+                        if (!matched) {
+                            if (cfg_allow_unknown) try unknown.append(allocator, key) else return error.UnknownOption;
+                        }
                     }
-                    if (!matched) {
-                        if (cfg_allow_unknown) try unknown.append(allocator, key) else return error.UnknownOption;
-                    }
-                } else {
-                    try positionals.append(allocator, opt);
-                }
+                } else try positionals.append(allocator, opt);
             }
 
             return .{

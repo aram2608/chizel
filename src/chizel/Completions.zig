@@ -6,7 +6,7 @@ pub const CompletionShell = enum { fish, zsh, bash };
 
 /// Generate shell completion script for the given `Options` struct.
 ///
-/// `Options` must be the same struct type passed to `ZiggyParse`. Only the
+/// `Options` must be the same struct type passed to `Chizel`. Only the
 /// comptime shape of `Options` is used — no parser instance is needed.
 ///
 /// - `.fish` — emits a file suitable for `~/.config/fish/completions/<prog>.fish`

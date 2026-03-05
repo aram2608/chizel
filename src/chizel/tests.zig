@@ -13,9 +13,9 @@ const SliceIter = struct {
     }
 };
 
-fn ziggyParser(comptime Opts: type, iter: *SliceIter) Chizel(Opts, *SliceIter) {
+fn ziggyParser(comptime Opts: type, iter: *SliceIter) Chizel(Opts) {
     const arena = std.heap.ArenaAllocator.init(testing.allocator);
-    return Chizel(Opts, *SliceIter).init(iter, arena);
+    return Chizel(Opts).init(iter, arena);
 }
 
 // Boolean
@@ -385,4 +385,48 @@ test "ziggy inline value: --slice=first then continues consuming" {
     try testing.expectEqualStrings("a", r.opts.tags[0]);
     try testing.expectEqualStrings("b", r.opts.tags[1]);
     try testing.expectEqualStrings("c", r.opts.tags[2]);
+}
+
+// Combined short flags
+
+test "ziggy combined shorts: -abc sets all three booleans" {
+    const Opts = struct {
+        alpha: bool = false,
+        beta: bool = false,
+        gamma: bool = false,
+        pub const shorts = .{ .alpha = 'a', .beta = 'b', .gamma = 'g' };
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "-abg" } };
+    var p = ziggyParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.alpha);
+    try testing.expect(r.opts.beta);
+    try testing.expect(r.opts.gamma);
+}
+
+test "ziggy combined shorts: unknown char in group errors" {
+    const Opts = struct {
+        alpha: bool = false,
+        pub const shorts = .{ .alpha = 'a' };
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "-az" } };
+    var p = ziggyParser(Opts, &iter);
+    defer p.deinit();
+    try testing.expectError(error.UnknownOption, p.parse());
+}
+
+test "ziggy combined shorts: unknown collected when allow_unknown" {
+    const Opts = struct {
+        alpha: bool = false,
+        pub const shorts = .{ .alpha = 'a' };
+        pub const config = .{ .allow_unknown = true };
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "-az" } };
+    var p = ziggyParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.alpha);
+    try testing.expectEqual(@as(usize, 1), r.unknown_options.len);
+    try testing.expectEqualStrings("z", r.unknown_options[0]);
 }

@@ -9,6 +9,7 @@ const Opts = struct {
 
     pub const shorts = .{ .host = 'h', .port = 'p' };
     pub const help = .{ .host = "The host", .port = "The port", .verbose = "Verbosity" };
+    pub const config = .{ .help_enabled = false, .allow_unknown = true };
 };
 
 pub fn main() !void {
@@ -19,7 +20,7 @@ pub fn main() !void {
     var args: ArgIterator = try std.process.argsWithAllocator(alloc);
     defer args.deinit();
     const arena = std.heap.ArenaAllocator.init(alloc);
-    var parser = chizel.Chizel(Opts, *ArgIterator).init(&args, arena);
+    var parser = chizel.Chizel(Opts).init(&args, arena);
     defer parser.deinit();
     const opts = try parser.parse();
 
