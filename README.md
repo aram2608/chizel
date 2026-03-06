@@ -1,8 +1,8 @@
 # chizel
 
-A lightweight, comptime struct-driven CLI argument parser for Zig.
+A lightweight, comptime-driven CLI argument parser for Zig.
 
-Define your options as a plain Zig struct with default values — no runtime setup, no registration calls. All config lives in the struct.
+Define your options as a plain Zig struct with default values. No runtime setup, no registration calls. All config lives in the struct. For programs with subcommands, pass a `union(enum)` instead.
 
 ## Installation
 
@@ -49,7 +49,7 @@ pub fn main() !void {
     defer args.deinit();
 
     const arena = std.heap.ArenaAllocator.init(alloc);
-    var parser = chizel.Chizel(Opts, *@TypeOf(args)).init(&args, arena);
+    var parser = chizel.Chizel(Opts).init(&args, arena);
     defer parser.deinit();
 
     const result = try parser.parse();
@@ -76,13 +76,41 @@ Run it:
 ./myapp --help
 ```
 
+## Subcommands
+
+Pass a `union(enum)` to `Chizel` instead of a struct. Each variant names a subcommand and must be a struct whose fields follow the same rules (all defaulted, optional `pub const shorts`):
+
+```zig
+const Cmds = union(enum) {
+    serve: struct {
+        port:    u16  = 8080,
+        verbose: bool = false,
+        pub const shorts = .{ .port = 'p' };
+    },
+    build: struct {
+        release: bool = false,
+    },
+};
+
+var parser = chizel.Chizel(Cmds).init(&args, arena);
+defer parser.deinit();
+
+const result = try parser.parse();
+switch (result.opts) {
+    .serve => |s| std.debug.print("serving on port {}\n", .{s.port}),
+    .build => |b| std.debug.print("release={}\n", .{b.release}),
+}
+```
+
+The first token after `argv[0]` is consumed as the subcommand name. Remaining tokens are parsed as flags for that subcommand's struct. Positionals are collected as normal.
+
 ## Defining options
 
-Every field in your `Options` struct must have a default value — this is enforced at compile time. For fields that are logically required (no sensible default), use `?T = null`. The type system then forces you to handle the missing case at the call site:
+Every field in your `Options` struct must have a default value; this is enforced at compile time. For fields that are logically required (no sensible default), use `?T = null`. The type system then forces you to handle the missing case at the call site:
 
 ```zig
 const Opts = struct {
-    name:    ?[]const u8        = null,   // required — handle null explicitly
+    name:    ?[]const u8        = null,   // required; handle null explicitly
     port:    u16                = 8080,
     tags:    []const []const u8 = &.{},
     verbose: bool               = false,
@@ -126,7 +154,7 @@ If `pub const help` is absent, calling `result.printHelp()` is a compile error.
 
 ### `pub const config`
 
-Control parser behaviour. All fields are optional — omit the entire declaration to use defaults:
+Control parser behaviour. All fields are optional; omit the entire declaration to use defaults:
 
 ```zig
 pub const config = .{
@@ -167,9 +195,9 @@ Applying `--no-` to a non-boolean field is `error.CannotNegate`.
 
 ### Methods
 
-**`result.printHelp(allocator) ![]const u8`** — Generates a formatted help message. Caller owns the returned slice. Requires `pub const help` in `Options`.
+**`result.printHelp(allocator) ![]const u8`**: Generates a formatted help message. Caller owns the returned slice. Requires `pub const help` in `Options`.
 
-**`result.emitParsed(allocator) ![]const u8`** — Debug dump of all parsed values. Caller owns the returned slice.
+**`result.emitParsed(allocator) ![]const u8`**: Debug dump of all parsed values. Caller owns the returned slice.
 
 ## Shell completions
 
@@ -187,6 +215,8 @@ Supported targets: `.fish`, `.bash`, `.zsh`.
 |-------|-------|
 | `error.AlreadyParsed` | `parse()` was called more than once |
 | `error.MissingProgramName` | Iterator was empty (no `argv[0]`) |
+| `error.MissingSubcommand` | Union mode: no subcommand token followed `argv[0]` |
+| `error.UnknownSubcommand` | Union mode: the subcommand token matched no variant |
 | `error.MissingValue` | A non-boolean flag had no following token |
 | `error.CannotNegate` | `--no-` applied to a non-boolean field |
 | `error.BoolCannotHaveValue` | `--flag=value` used on a boolean field |
@@ -199,9 +229,9 @@ All strings in `Result` (including `opts` string fields, positionals, unknowns) 
 
 ```zig
 const arena = std.heap.ArenaAllocator.init(alloc);
-var parser = chizel.Chizel(Opts, *@TypeOf(args)).init(&args, arena);
+var parser = chizel.Chizel(Opts).init(&args, arena);
 defer parser.deinit();              // frees everything
 
 const result = try parser.parse(); // result borrows from arena
-// use result here — do NOT store slices beyond this scope
+// use result here; do NOT store slices beyond this scope
 ```

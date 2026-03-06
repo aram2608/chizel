@@ -430,3 +430,88 @@ test "ziggy combined shorts: unknown collected when allow_unknown" {
     try testing.expectEqual(@as(usize, 1), r.unknown_options.len);
     try testing.expectEqualStrings("z", r.unknown_options[0]);
 }
+
+// Subcommands (union(enum))
+
+test "ziggy subcommand: correct variant is active" {
+    const Cmds = union(enum) {
+        serve: struct { port: u16 = 8080 },
+        build: struct { release: bool = false },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve" } };
+    var p = ziggyParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts == .serve);
+}
+
+test "ziggy subcommand: flags parsed into the active variant" {
+    const Cmds = union(enum) {
+        serve: struct { port: u16 = 8080 },
+        build: struct { release: bool = false },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve", "--port", "9090" } };
+    var p = ziggyParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(u16, 9090), r.opts.serve.port);
+}
+
+test "ziggy subcommand: default used when flag absent" {
+    const Cmds = union(enum) {
+        serve: struct { port: u16 = 8080 },
+        build: struct { release: bool = false },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "build" } };
+    var p = ziggyParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(!r.opts.build.release);
+}
+
+test "ziggy subcommand: shorts on subcommand struct" {
+    const Cmds = union(enum) {
+        serve: struct {
+            port: u16 = 8080,
+            pub const shorts = .{ .port = 'p' };
+        },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve", "-p", "1234" } };
+    var p = ziggyParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(u16, 1234), r.opts.serve.port);
+}
+
+test "ziggy subcommand: missing subcommand returns error" {
+    const Cmds = union(enum) {
+        serve: struct { port: u16 = 8080 },
+    };
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = ziggyParser(Cmds, &iter);
+    defer p.deinit();
+    try testing.expectError(error.MissingSubcommand, p.parse());
+}
+
+test "ziggy subcommand: unknown subcommand returns error" {
+    const Cmds = union(enum) {
+        serve: struct { port: u16 = 8080 },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "typo" } };
+    var p = ziggyParser(Cmds, &iter);
+    defer p.deinit();
+    try testing.expectError(error.UnknownSubcommand, p.parse());
+}
+
+test "ziggy subcommand: positionals collected" {
+    const Cmds = union(enum) {
+        run: struct { verbose: bool = false },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "run", "file1", "file2" } };
+    var p = ziggyParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(usize, 2), r.positionals.len);
+    try testing.expectEqualStrings("file1", r.positionals[0]);
+    try testing.expectEqualStrings("file2", r.positionals[1]);
+}

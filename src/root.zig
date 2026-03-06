@@ -1,7 +1,7 @@
-//! chizel — a lightweight, comptime struct-driven CLI argument parser for Zig.
+//! chizel: a lightweight, comptime struct-driven CLI argument parser for Zig.
 //!
 //! Define your options as a plain Zig struct with default values and chizel
-//! handles the rest. No runtime setup, no registration calls — all config lives
+//! handles the rest. No runtime setup, no registration calls. All config lives
 //! in the struct itself.
 //!
 //! ## Quick start
@@ -28,7 +28,7 @@
 //!     defer args.deinit();
 //!
 //!     const arena = std.heap.ArenaAllocator.init(alloc);
-//!     var parser = chizel.Chizel(Opts, *@TypeOf(args)).init(&args, arena);
+//!     var parser = chizel.Chizel(Opts).init(&args, arena);
 //!     defer parser.deinit();
 //!
 //!     const result = try parser.parse();
@@ -40,9 +40,9 @@
 //!         return;
 //!     }
 //!
-//!     // result.prog        — argv[0] basename
-//!     // result.opts        — populated Opts struct
-//!     // result.positionals — non-flag tokens
+//!     // result.prog:        argv[0] basename
+//!     // result.opts:        populated Opts struct
+//!     // result.positionals: non-flag tokens
 //! }
 //! ```
 pub const Chizel = @import("chizel/chizel.zig").Chizel;
