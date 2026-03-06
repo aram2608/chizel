@@ -275,6 +275,8 @@ pub fn Chizel(comptime Options: type) type {
             /// When true, `opts` may be partially populated; check this first.
             had_help: bool,
 
+            // TODO: Fix these two methods for the new subcommands
+
             /// Return a human-readable dump of the parsed result, useful for
             /// debugging. Caller owns the returned slice.
             pub fn emitParsed(self: *const @This(), allocator: Allocator) ![]const u8 {
@@ -331,6 +333,7 @@ pub fn Chizel(comptime Options: type) type {
             /// for freeing all memory.
             pub fn printHelp(self: *const @This(), allocator: Allocator) ![]const u8 {
                 var buff = std.io.Writer.Allocating.init(allocator);
+                errdefer buff.deinit();
                 try buff.writer.print("Usage: {s} [OPTIONS]\n\nOptions:\n", .{self.prog});
 
                 if (@hasDecl(Options, "help")) {
@@ -493,15 +496,20 @@ pub fn Chizel(comptime Options: type) type {
                     // matching against struct field names. Save the original for
                     // unknown-option reporting so callers see the flag as typed.
                     const original_key = key;
-                    const buf = try allocator.dupe(u8, key);
-                    for (buf) |*c| if (c.* == '-') {
-                        c.* = '_';
-                    };
-                    key = buf;
+
+                    // For better performance we only perform the normalization
+                    // if a '-' is found in the string.
+                    // Each normalization requires a heap allocation so if we can
+                    // skip for non-long options it's probably better.
+                    const normalized_key = if (std.mem.indexOfScalar(u8, key, '-') != null) blk: {
+                        const buff = try allocator.dupe(u8, key);
+                        std.mem.replaceScalar(u8, buff, '-', '_');
+                        break :blk buff;
+                    } else key;
 
                     var matched = false;
                     blk: inline for (std.meta.fields(T)) |field| {
-                        if (eql(u8, key, field.name)) {
+                        if (eql(u8, normalized_key, field.name)) {
                             const base_type = switch (@typeInfo(field.type)) {
                                 .optional => |o| o.child,
                                 else => field.type,
