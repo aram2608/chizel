@@ -5,10 +5,17 @@ const ArgIterator = std.process.ArgIterator;
 const Commands = union(enum) {
     foo: struct {
         foo: bool = false,
+
+        pub const help = .{ .foo = "Nested bar bro" };
     },
     bar: struct {
         bar: bool = false,
+
+        pub const help = .{ .bar = "Nested bar bro" };
     },
+
+    pub const help = .{ .foo = "Foo man", .bar = "Bar man" };
+    pub const config = .{ .help_enabled = true };
 };
 
 pub fn main() !void {
@@ -23,12 +30,19 @@ pub fn main() !void {
     defer parser.deinit();
     const r = try parser.parse();
 
+    if (r.had_help) {
+        const help = try r.printHelp(alloc);
+        defer alloc.free(help);
+        std.debug.print("{s}\n", .{help});
+        return;
+    }
+
     switch (r.opts) {
-        .foo => {
-            if (r.opts.foo.foo) std.debug.print("FOO FOUND\n", .{});
+        .foo => |o| {
+            if (o.foo) std.debug.print("FOO FOUND\n", .{});
         },
-        .bar => {
-            if (r.opts.bar.bar) std.debug.print("BAR FOUND\n", .{});
+        .bar => |o| {
+            if (o.bar) std.debug.print("BAR FOUND\n", .{});
         },
     }
 

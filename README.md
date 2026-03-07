@@ -2,7 +2,12 @@
 
 A lightweight, comptime-driven CLI argument parser for Zig.
 
-Define your options as a plain Zig struct with default values. No runtime setup, no registration calls. All config lives in the struct. For programs with subcommands, pass a `union(enum)` instead.
+Two parsers are provided:
+
+- **`Chip(Opts)`** for single-command programs (struct-based options)
+- **`Chizel(Cmds)`** for programs with subcommands (union-based)
+
+No runtime setup, no registration calls. All config lives in the type itself.
 
 ## Installation
 
@@ -49,7 +54,7 @@ pub fn main() !void {
     defer args.deinit();
 
     const arena = std.heap.ArenaAllocator.init(alloc);
-    var parser = chizel.Chizel(Opts).init(&args, arena);
+    var parser = chizel.Chip(Opts).init(&args, arena);
     defer parser.deinit();
 
     const result = try parser.parse();
@@ -78,7 +83,8 @@ Run it:
 
 ## Subcommands
 
-Pass a `union(enum)` to `Chizel` instead of a struct. Each variant names a subcommand and must be a struct whose fields follow the same rules (all defaulted, optional `pub const shorts`):
+Use `Chizel` when your program has subcommands. Pass a `union(enum)` where each
+variant names a subcommand and holds a struct of flags:
 
 ```zig
 const Cmds = union(enum) {
@@ -86,9 +92,11 @@ const Cmds = union(enum) {
         port:    u16  = 8080,
         verbose: bool = false,
         pub const shorts = .{ .port = 'p' };
+        pub const help = .{ ._cmd = "Start the server", .port = "Port to listen on" };
     },
     build: struct {
         release: bool = false,
+        pub const help = .{ ._cmd = "Build the project" };
     },
 };
 
@@ -102,11 +110,14 @@ switch (result.opts) {
 }
 ```
 
-The first token after `argv[0]` is consumed as the subcommand name. Remaining tokens are parsed as flags for that subcommand's struct. Positionals are collected as normal.
+The first token after `argv[0]` is consumed as the subcommand name. Remaining tokens
+are parsed as flags for that subcommand. `--help` before the subcommand sets
+`Result.had_help` without requiring a valid subcommand.
 
 ## Defining options
 
-Every field in your `Options` struct must have a default value; this is enforced at compile time. For fields that are logically required (no sensible default), use `?T = null`. The type system then forces you to handle the missing case at the call site:
+Every field must have a default value; this is enforced at compile time. For fields
+that are logically required (no sensible default), use `?T = null`:
 
 ```zig
 const Opts = struct {
@@ -152,9 +163,16 @@ pub const help = .{
 
 If `pub const help` is absent, calling `result.printHelp()` is a compile error.
 
+For subcommand unions, add `._cmd` to a subcommand's `help` to provide its description
+in the subcommand listing:
+
+```zig
+pub const help = .{ ._cmd = "Start the server", .port = "Port to listen on" };
+```
+
 ### `pub const config`
 
-Control parser behaviour. All fields are optional; omit the entire declaration to use defaults:
+Control parser behaviour. All fields are optional:
 
 ```zig
 pub const config = .{
@@ -170,13 +188,13 @@ pub const config = .{
 
 ## Flag syntax
 
-| Syntax             | Meaning                                              |
-|--------------------|------------------------------------------------------|
-| `--name value`     | Long flag with a value                               |
-| `--name=value`     | Inline value (equivalent to above)                   |
-| `--flag`           | Boolean flag → `true`                                |
-| `--no-flag`        | Boolean negation → `false`                           |
-| `-s value`         | Short alias (declared via `pub const shorts`)        |
+| Syntax             | Meaning                                               |
+|--------------------|-------------------------------------------------------|
+| `--name value`     | Long flag with a value                                |
+| `--name=value`     | Inline value (equivalent to above)                    |
+| `--flag`           | Boolean flag → `true`                                 |
+| `--no-flag`        | Boolean negation → `false`                            |
+| `-s value`         | Short alias (declared via `pub const shorts`)         |
 | `--`               | End of flags; all remaining tokens become positionals |
 
 Applying `--no-` to a non-boolean field is `error.CannotNegate`.
@@ -188,16 +206,19 @@ Applying `--no-` to a non-boolean field is `error.CannotNegate`.
 | Field              | Type                    | Description |
 |--------------------|-------------------------|-------------|
 | `prog`             | `[]const u8`            | `argv[0]` basename |
-| `opts`             | `Options`               | Populated options struct |
+| `opts`             | `Options`               | Populated options struct or active union variant |
 | `positionals`      | `[]const []const u8`    | Non-flag tokens in order |
 | `unknown_options`  | `[]const []const u8`    | Unrecognised flags (only when `allow_unknown = true`) |
 | `had_help`         | `bool`                  | `true` when `--help` or `-h` appeared |
 
 ### Methods
 
-**`result.printHelp(allocator) ![]const u8`**: Generates a formatted help message. Caller owns the returned slice. Requires `pub const help` in `Options`.
+**`result.printHelp(allocator) ![]const u8`**: Generates a formatted help message.
+Caller owns the returned slice. Requires `pub const help` in `Options` (for `Chip`),
+or emits the subcommand listing (for `Chizel`).
 
-**`result.emitParsed(allocator) ![]const u8`**: Debug dump of all parsed values. Caller owns the returned slice.
+**`result.emitParsed(allocator) ![]const u8`**: Debug dump of all parsed values.
+Caller owns the returned slice.
 
 ## Shell completions
 
@@ -207,7 +228,7 @@ defer allocator.free(script);
 // write script to ~/.config/fish/completions/myprog.fish
 ```
 
-Supported targets: `.fish`, `.bash`, `.zsh`.
+Supported targets: `.fish`, `.bash`, `.zsh`. Works with both `Chip` and `Chizel` types.
 
 ## Errors from `parse`
 
@@ -215,8 +236,8 @@ Supported targets: `.fish`, `.bash`, `.zsh`.
 |-------|-------|
 | `error.AlreadyParsed` | `parse()` was called more than once |
 | `error.MissingProgramName` | Iterator was empty (no `argv[0]`) |
-| `error.MissingSubcommand` | Union mode: no subcommand token followed `argv[0]` |
-| `error.UnknownSubcommand` | Union mode: the subcommand token matched no variant |
+| `error.MissingSubcommand` | `Chizel` only: no subcommand token followed `argv[0]` |
+| `error.UnknownSubcommand` | `Chizel` only: the subcommand token matched no variant |
 | `error.MissingValue` | A non-boolean flag had no following token |
 | `error.CannotNegate` | `--no-` applied to a non-boolean field |
 | `error.BoolCannotHaveValue` | `--flag=value` used on a boolean field |
@@ -225,11 +246,12 @@ Supported targets: `.fish`, `.bash`, `.zsh`.
 
 ## Lifetime
 
-All strings in `Result` (including `opts` string fields, positionals, unknowns) are owned by the parser's arena. Access them only while the parser is alive:
+All strings in `Result` (including `opts` string fields, positionals, unknowns) are
+owned by the parser's arena. Access them only while the parser is alive:
 
 ```zig
 const arena = std.heap.ArenaAllocator.init(alloc);
-var parser = chizel.Chizel(Opts).init(&args, arena);
+var parser = chizel.Chip(Opts).init(&args, arena);
 defer parser.deinit();              // frees everything
 
 const result = try parser.parse(); // result borrows from arena
