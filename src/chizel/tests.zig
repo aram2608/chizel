@@ -642,6 +642,95 @@ test "chizel float: bad value returns error" {
     try testing.expectError(error.InvalidCharacter, p.parse());
 }
 
+// Enum types
+
+test "chip enum: parsed by name" {
+    const Format = enum { json, text, binary };
+    const Opts = struct { format: Format = .text };
+    var iter = SliceIter{ .tokens = &.{ "prog", "--format", "json" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(Format.json, r.opts.format);
+}
+
+test "chip enum: hyphenated value maps to underscored variant" {
+    const Format = enum { json_pretty, text };
+    const Opts = struct { format: Format = .text };
+    var iter = SliceIter{ .tokens = &.{ "prog", "--format", "json-pretty" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(Format.json_pretty, r.opts.format);
+}
+
+test "chip enum: inline value --flag=variant" {
+    const Format = enum { json, text };
+    const Opts = struct { format: Format = .text };
+    var iter = SliceIter{ .tokens = &.{ "prog", "--format=json" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(Format.json, r.opts.format);
+}
+
+test "chip enum: default used when absent" {
+    const Format = enum { json, text };
+    const Opts = struct { format: Format = .text };
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(Format.text, r.opts.format);
+}
+
+test "chip enum: unknown variant returns error" {
+    const Format = enum { json, text };
+    const Opts = struct { format: Format = .text };
+    var iter = SliceIter{ .tokens = &.{ "prog", "--format", "xml" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    try testing.expectError(error.InvalidEnumValue, p.parse());
+}
+
+test "chip enum: missing value returns error" {
+    const Format = enum { json, text };
+    const Opts = struct { format: Format = .text };
+    var iter = SliceIter{ .tokens = &.{ "prog", "--format" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    try testing.expectError(error.MissingValue, p.parse());
+}
+
+test "chip enum: negation returns CannotNegate" {
+    const Format = enum { json, text };
+    const Opts = struct { format: Format = .text };
+    var iter = SliceIter{ .tokens = &.{ "prog", "--no-format" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    try testing.expectError(error.CannotNegate, p.parse());
+}
+
+test "chip enum: optional enum absent is null" {
+    const Format = enum { json, text };
+    const Opts = struct { format: ?Format = null };
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.format == null);
+}
+
+test "chip enum: optional enum set when present" {
+    const Format = enum { json, text };
+    const Opts = struct { format: ?Format = null };
+    var iter = SliceIter{ .tokens = &.{ "prog", "--format", "json" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(Format.json, r.opts.format.?);
+}
+
 // Optional non-string types
 
 test "chizel optional int: null when absent" {
@@ -1021,4 +1110,259 @@ test "chizel validate: optional field validator called when value present and in
     var p = chizelParser(Cmds, &iter);
     defer p.deinit();
     try testing.expectError(error.CountMustBePositive, p.parse());
+}
+
+// --- Env var initialization ---
+//
+// Uses POSIX setenv/unsetenv to set real process env vars.
+// All tests clean up with defer to avoid leaking into subsequent tests.
+
+const posix_c = struct {
+    extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern fn unsetenv(name: [*:0]const u8) c_int;
+};
+
+test "chip env: bool set via '1'" {
+    const Opts = struct { cztest_flag: bool = false };
+    _ = posix_c.setenv("cztest_flag", "1", 1);
+    defer _ = posix_c.unsetenv("cztest_flag");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.cztest_flag);
+}
+
+test "chip env: bool set via 'true'" {
+    const Opts = struct { cztest_flag: bool = false };
+    _ = posix_c.setenv("cztest_flag", "true", 1);
+    defer _ = posix_c.unsetenv("cztest_flag");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.cztest_flag);
+}
+
+test "chip env: bool set via 'yes'" {
+    const Opts = struct { cztest_flag: bool = false };
+    _ = posix_c.setenv("cztest_flag", "yes", 1);
+    defer _ = posix_c.unsetenv("cztest_flag");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.cztest_flag);
+}
+
+test "chip env: unrecognized value leaves field false" {
+    const Opts = struct { cztest_flag: bool = false };
+    _ = posix_c.setenv("cztest_flag", "maybe", 1);
+    defer _ = posix_c.unsetenv("cztest_flag");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(!r.opts.cztest_flag);
+}
+
+test "chip env: key match is case-insensitive" {
+    const Opts = struct { cztest_flag: bool = false };
+    _ = posix_c.setenv("CZTEST_FLAG", "1", 1);
+    defer _ = posix_c.unsetenv("CZTEST_FLAG");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.cztest_flag);
+}
+
+test "chip env: CLI flag overrides env var" {
+    const Opts = struct { cztest_flag: bool = false };
+    _ = posix_c.setenv("cztest_flag", "1", 1);
+    defer _ = posix_c.unsetenv("cztest_flag");
+    var iter = SliceIter{ .tokens = &.{ "prog", "--no-cztest-flag" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(!r.opts.cztest_flag);
+}
+
+test "chip env: non-matching env var ignored" {
+    const Opts = struct { cztest_flag: bool = false };
+    _ = posix_c.setenv("cztest_other", "1", 1);
+    defer _ = posix_c.unsetenv("cztest_other");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(!r.opts.cztest_flag);
+}
+
+test "chip env: prefix required, unprefixed var ignored" {
+    const Opts = struct {
+        cztest_flag: bool = false,
+        pub const config = .{ .env_prefix = "CZAPP_" };
+    };
+    _ = posix_c.setenv("cztest_flag", "1", 1);
+    defer _ = posix_c.unsetenv("cztest_flag");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(!r.opts.cztest_flag);
+}
+
+test "chip env: prefixed var sets field" {
+    const Opts = struct {
+        cztest_flag: bool = false,
+        pub const config = .{ .env_prefix = "CZAPP_" };
+    };
+    _ = posix_c.setenv("CZAPP_cztest_flag", "1", 1);
+    defer _ = posix_c.unsetenv("CZAPP_cztest_flag");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.cztest_flag);
+}
+
+test "chip env: prefix match is case-insensitive" {
+    const Opts = struct {
+        cztest_flag: bool = false,
+        pub const config = .{ .env_prefix = "CZAPP_" };
+    };
+    _ = posix_c.setenv("czapp_cztest_flag", "yes", 1);
+    defer _ = posix_c.unsetenv("czapp_cztest_flag");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.cztest_flag);
+}
+
+test "chizel env: env var applied to active subcommand" {
+    const Cmds = union(enum) {
+        serve: struct {
+            cztest_flag: bool = false,
+            pub const config = .{ .env_prefix = "CZAPP_" };
+        },
+        build: struct { release: bool = false },
+    };
+    _ = posix_c.setenv("CZAPP_cztest_flag", "1", 1);
+    defer _ = posix_c.unsetenv("CZAPP_cztest_flag");
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve" } };
+    var p = chizelParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(r.opts.serve.cztest_flag);
+}
+
+test "chizel env: env var does not bleed into inactive subcommand" {
+    const Cmds = union(enum) {
+        serve: struct { cztest_flag: bool = false },
+        build: struct {
+            cztest_flag: bool = false,
+            pub const config = .{ .env_prefix = "CZAPP_" };
+        },
+    };
+    _ = posix_c.setenv("CZAPP_cztest_flag", "1", 1);
+    defer _ = posix_c.unsetenv("CZAPP_cztest_flag");
+    // Run 'serve', which has no prefix config — env var should not apply
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve" } };
+    var p = chizelParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expect(!r.opts.serve.cztest_flag);
+}
+
+// Env var: non-bool types
+
+test "chip env: string field set from env var" {
+    const Opts = struct { cztest_host: []const u8 = "localhost" };
+    _ = posix_c.setenv("cztest_host", "example.com", 1);
+    defer _ = posix_c.unsetenv("cztest_host");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqualStrings("example.com", r.opts.cztest_host);
+}
+
+test "chip env: string CLI overrides env var" {
+    const Opts = struct { cztest_host: []const u8 = "localhost" };
+    _ = posix_c.setenv("cztest_host", "from-env.com", 1);
+    defer _ = posix_c.unsetenv("cztest_host");
+    var iter = SliceIter{ .tokens = &.{ "prog", "--cztest-host", "from-cli.com" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqualStrings("from-cli.com", r.opts.cztest_host);
+}
+
+test "chip env: int field set from env var" {
+    const Opts = struct { cztest_port: u16 = 8080 };
+    _ = posix_c.setenv("cztest_port", "9090", 1);
+    defer _ = posix_c.unsetenv("cztest_port");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(u16, 9090), r.opts.cztest_port);
+}
+
+test "chip env: int CLI overrides env var" {
+    const Opts = struct { cztest_port: u16 = 8080 };
+    _ = posix_c.setenv("cztest_port", "9090", 1);
+    defer _ = posix_c.unsetenv("cztest_port");
+    var iter = SliceIter{ .tokens = &.{ "prog", "--cztest-port", "1234" } };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(u16, 1234), r.opts.cztest_port);
+}
+
+test "chip env: float field set from env var" {
+    const Opts = struct { cztest_rate: f32 = 0 };
+    _ = posix_c.setenv("cztest_rate", "3.14", 1);
+    defer _ = posix_c.unsetenv("cztest_rate");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectApproxEqRel(@as(f32, 3.14), r.opts.cztest_rate, 1e-5);
+}
+
+test "chip env: optional string set from env var" {
+    const Opts = struct { cztest_name: ?[]const u8 = null };
+    _ = posix_c.setenv("cztest_name", "alice", 1);
+    defer _ = posix_c.unsetenv("cztest_name");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqualStrings("alice", r.opts.cztest_name.?);
+}
+
+test "chip env: optional int set from env var" {
+    const Opts = struct { cztest_count: ?u32 = null };
+    _ = posix_c.setenv("cztest_count", "42", 1);
+    defer _ = posix_c.unsetenv("cztest_count");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(u32, 42), r.opts.cztest_count.?);
+}
+
+test "chip env: string slice field not settable from env var" {
+    // []const []const u8 fields are silently skipped — no crash
+    const Opts = struct { cztest_tags: []const []const u8 = &.{} };
+    _ = posix_c.setenv("cztest_tags", "a,b,c", 1);
+    defer _ = posix_c.unsetenv("cztest_tags");
+    var iter = SliceIter{ .tokens = &.{"prog"} };
+    var p = chipParser(Opts, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(usize, 0), r.opts.cztest_tags.len);
 }

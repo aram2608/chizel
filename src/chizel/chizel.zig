@@ -66,52 +66,14 @@ pub fn Chizel(comptime Options: type) type {
         }
     }
 
-    const cfg_help_enabled: bool = if (@hasDecl(Options, "config") and
-        @hasField(@TypeOf(Options.config), "help_enabled"))
-        Options.config.help_enabled
-    else
-        true;
+    const cfg_help_enabled = configFlag(Options, "help_enabled", true);
+    const cfg_allow_unknown = configFlag(Options, "allow_unknown", false);
 
-    const cfg_allow_unknown: bool = if (@hasDecl(Options, "config") and
-        @hasField(@TypeOf(Options.config), "allow_unknown"))
-        Options.config.allow_unknown
-    else
-        false;
-
+    // Validation checks at comptime
     comptime {
-        // Check for naming collisons at comptime
         for (union_info.fields) |ufield| {
-            if (@hasDecl(ufield.type, "shorts")) {
-                const s_fields = fields(@TypeOf(ufield.type.shorts));
-                for (s_fields, 0..) |fa, i| {
-                    const ca: u8 = @field(ufield.type.shorts, fa.name);
-                    for (s_fields[i + 1 ..]) |fb| {
-                        const cb: u8 = @field(ufield.type.shorts, fb.name);
-                        if (ca == cb) {
-                            @compileError("Duplicate short flag '" ++ [_]u8{ca} ++ "' on fields `" ++
-                                fa.name ++ "` and `" ++ fb.name ++ "` in subcommand `" ++ ufield.name ++ "`");
-                        }
-                    }
-                }
-            }
-            // Check for validation functions at comptime
-            for (fields(ufield.type)) |field| {
-                const fn_name = "validate_" ++ field.name;
-                if (@hasDecl(ufield.type, fn_name)) {
-                    const Fn = @TypeOf(@field(ufield.type, fn_name));
-                    const fn_info = @typeInfo(Fn);
-                    if (fn_info != .@"fn")
-                        @compileError(fn_name ++ " in subcommand `" ++ ufield.name ++ "` must be a function");
-                    const params = fn_info.@"fn".params;
-                    const expected_type = switch (@typeInfo(field.type)) {
-                        .optional => |opt| opt.child,
-                        else => field.type,
-                    };
-                    if (params.len != 1 or params[0].type != expected_type)
-                        @compileError(fn_name ++ " in subcommand `" ++ ufield.name ++ "` must take one argument of type " ++
-                            @typeName(expected_type));
-                }
-            }
+            checkShortsCollisions(ufield.type, " in subcommand `" ++ ufield.name ++ "`");
+            checkValidateFns(ufield.type, " in subcommand `" ++ ufield.name ++ "`");
         }
     }
 
@@ -133,6 +95,7 @@ pub fn Chizel(comptime Options: type) type {
             const T = @TypeOf(inner);
             comptime if (@typeInfo(T) != .pointer)
                 @compileError("Chizel.init: `inner` must be a pointer to an iterator.");
+            // Cast the functon pointer so we can use it in our iterator
             const gen = struct {
                 fn nextFn(ptr: *anyopaque) ?[]const u8 {
                     return @as(T, @ptrCast(@alignCast(ptr))).next();
@@ -176,24 +139,7 @@ pub fn Chizel(comptime Options: type) type {
                 var buff = std.io.Writer.Allocating.init(allocator);
                 errdefer buff.deinit();
 
-                try buff.writer.print("prog: {s}\n", .{self.prog});
-                try buff.writer.print("had_help: {}\n", .{self.had_help});
-
-                try buff.writer.print("positionals: [", .{});
-                for (self.positionals, 0..) |p, i| {
-                    if (i > 0) try buff.writer.print(", ", .{});
-                    try buff.writer.print("{s}", .{p});
-                }
-                try buff.writer.print("]\n", .{});
-
-                if (self.unknown_options.len > 0) {
-                    try buff.writer.print("unknown_options: [", .{});
-                    for (self.unknown_options, 0..) |u, i| {
-                        if (i > 0) try buff.writer.print(", ", .{});
-                        try buff.writer.print("{s}", .{u});
-                    }
-                    try buff.writer.print("]\n", .{});
-                }
+                try emitResultHeader(self.prog, self.had_help, self.positionals, self.unknown_options, &buff.writer);
 
                 try buff.writer.print("opts:\n", .{});
                 const tag = std.meta.activeTag(self.opts);
@@ -342,8 +288,12 @@ pub fn Chizel(comptime Options: type) type {
                 inline for (@typeInfo(Options).@"union".fields) |f| {
                     if (!matched and strEql(normalized_sub, f.name)) {
                         var sub: f.type = .{};
-                        try self.parseStructOpts(
+                        try initializeEnvOptsImpl(f.type, &sub, allocator);
+                        try parseStructOptsImpl(
                             f.type,
+                            cfg_help_enabled,
+                            cfg_allow_unknown,
+                            &self.iter,
                             &sub,
                             &positionals,
                             &unknown,
@@ -398,186 +348,6 @@ pub fn Chizel(comptime Options: type) type {
 
             return result;
         }
-
-        fn parseStructOpts(
-            self: *Self,
-            comptime T: type,
-            target: *T,
-            positionals: *std.ArrayList([]const u8),
-            unknown: *std.ArrayList([]const u8),
-            had_help: *bool,
-            allocator: Allocator,
-        ) !void {
-            while (self.iter.next()) |opt| {
-                if (strEql(opt, "--")) {
-                    while (self.iter.next()) |pos| try positionals.append(allocator, pos);
-                    break;
-                }
-                if (cfg_help_enabled and strEql(opt, "--help")) {
-                    had_help.* = true;
-                    // Tokens must be drained after a call to help
-                    while (self.iter.next()) |_| {}
-                    return;
-                }
-                if (startsWith(u8, opt, "--")) {
-                    var key = opt[2..];
-                    var inline_val: ?[]const u8 = null;
-                    if (strIndexOfScalar(key, '=')) |i| {
-                        inline_val = key[i + 1 ..];
-                        key = key[0..i];
-                    }
-                    // Capture original key in case it needs to get stored in
-                    // unknown options
-                    const negated = startsWith(u8, key, "no-");
-                    if (negated) key = key[3..];
-                    const original_key = key;
-
-                    // Long opts arrive as --long-opt so convert `-` to `_` before
-                    // matching against struct field names. Save the original for
-                    // unknown-option reporting so callers see the flag as typed.
-                    // For better performance we only perform the normalization
-                    // if a '-' is found in the string.
-                    // Each normalization requires a heap allocation so if we can
-                    // skip for non-long options it's probably better.
-                    const normalized_key = if (strIndexOfScalar(key, '-') != null) blk: {
-                        const buff = try allocator.dupe(u8, key);
-                        std.mem.replaceScalar(u8, buff, '-', '_');
-                        break :blk buff;
-                    } else key;
-
-                    var matched = false;
-                    blk: inline for (std.meta.fields(T)) |field| {
-                        if (strEql(normalized_key, field.name)) {
-                            const base_type = switch (@typeInfo(field.type)) {
-                                .optional => |o| o.child,
-                                else => field.type,
-                            };
-                            if (negated and base_type != bool) return error.CannotNegate;
-                            @field(target.*, field.name) = try self.parseNext(
-                                field.type,
-                                negated,
-                                inline_val,
-                                allocator,
-                            );
-                            matched = true;
-                            break :blk;
-                        }
-                    }
-                    if (!matched) {
-                        if (cfg_allow_unknown) try unknown.append(allocator, original_key) else return error.UnknownOption;
-                    }
-                } else if (startsWith(u8, opt, "-")) {
-                    if (opt.len > 2) {
-                        for (opt[1..]) |o| {
-                            var matched = false;
-                            if (@hasDecl(T, "shorts")) {
-                                inline for (fields(T)) |field| {
-                                    if (@hasField(@TypeOf(T.shorts), field.name)) {
-                                        const s: u8 = @field(T.shorts, field.name);
-                                        if (o == s) {
-                                            const base_type = switch (@typeInfo(field.type)) {
-                                                .optional => |p| p.child,
-                                                else => field.type,
-                                            };
-                                            if (base_type != bool) return error.CombinedShortRequiresValue;
-                                            @field(target.*, field.name) = try self.parseNext(
-                                                field.type,
-                                                false,
-                                                null,
-                                                allocator,
-                                            );
-                                            matched = true;
-                                        }
-                                    }
-                                }
-                            }
-                            if (!matched) {
-                                if (cfg_allow_unknown) {
-                                    const char_str = try allocator.dupe(u8, &[_]u8{o});
-                                    try unknown.append(allocator, char_str);
-                                } else return error.UnknownOption;
-                            }
-                        }
-                    } else {
-                        const key = opt[1..];
-                        var matched = false;
-                        if (@hasDecl(T, "shorts")) {
-                            inline for (fields(T)) |field| {
-                                if (@hasField(@TypeOf(T.shorts), field.name)) {
-                                    const s: u8 = @field(T.shorts, field.name);
-                                    if (key.len == 1 and key[0] == s) {
-                                        @field(target.*, field.name) = try self.parseNext(
-                                            field.type,
-                                            false,
-                                            null,
-                                            allocator,
-                                        );
-                                        matched = true;
-                                    }
-                                }
-                            }
-                        }
-                        if (!matched) {
-                            if (cfg_allow_unknown) try unknown.append(allocator, key) else return error.UnknownOption;
-                        }
-                    }
-                } else try positionals.append(allocator, opt);
-            }
-        }
-
-        fn parseNext(
-            self: *Self,
-            comptime FieldType: type,
-            negated: bool,
-            inline_val: ?[]const u8,
-            allocator: Allocator,
-        ) !FieldType {
-            return switch (FieldType) {
-                bool => blk: {
-                    if (inline_val != null) return error.BoolCannotHaveValue;
-                    break :blk !negated;
-                },
-
-                []const u8 => blk: {
-                    const s = inline_val orelse self.iter.next() orelse return error.MissingValue;
-                    break :blk try allocator.dupe(u8, s);
-                },
-
-                // Consumes tokens until the next flag token or end of args.
-                // looksLikeOptionToken allows negative numbers like "-1" or "-3.14"
-                // to be consumed as values rather than stopping the slice early.
-                // An inline value (--flag=foo) is treated as the first element.
-                []const []const u8 => blk: {
-                    var list: std.ArrayList([]const u8) = .empty;
-                    if (inline_val) |v| try list.append(allocator, try allocator.dupe(u8, v));
-                    while (self.iter.peek()) |s| {
-                        if (looksLikeOptionToken(s)) break;
-                        _ = self.iter.next();
-                        try list.append(allocator, try allocator.dupe(u8, s));
-                    }
-                    if (list.items.len == 0) return error.MissingValue;
-                    break :blk try list.toOwnedSlice(allocator);
-                },
-
-                else => switch (@typeInfo(FieldType)) {
-                    .int => blk: {
-                        const s = inline_val orelse self.iter.next() orelse return error.MissingValue;
-                        break :blk try std.fmt.parseInt(FieldType, s, 10);
-                    },
-                    .float => blk: {
-                        const s = inline_val orelse self.iter.next() orelse return error.MissingValue;
-                        break :blk try std.fmt.parseFloat(FieldType, s);
-                    },
-                    .optional => |opt| try self.parseNext(
-                        opt.child,
-                        negated,
-                        inline_val,
-                        allocator,
-                    ),
-                    else => @compileError("Unsupported type: " ++ @typeName(FieldType)),
-                },
-            };
-        }
     };
 }
 
@@ -625,56 +395,8 @@ pub fn Chizel(comptime Options: type) type {
 pub fn Chip(comptime Options: type) type {
     if (@typeInfo(Options) != .@"struct") @compileError("Options must be a `struct`");
 
-    // Extract behaviour flags from Options.config at comptime, falling back to defaults.
-    const cfg_help_enabled: bool = if (@hasDecl(Options, "config") and
-        @hasField(@TypeOf(Options.config), "help_enabled"))
-        Options.config.help_enabled
-    else
-        true;
-
-    const cfg_allow_unknown: bool = if (@hasDecl(Options, "config") and
-        @hasField(@TypeOf(Options.config), "allow_unknown"))
-        Options.config.allow_unknown
-    else
-        false;
-
-    // Check for naming collisions at comptime
-    comptime {
-        if (@hasDecl(Options, "shorts")) {
-            const s_fields = fields(@TypeOf(Options.shorts));
-            for (s_fields, 0..) |fa, i| {
-                const ca: u8 = @field(Options.shorts, fa.name);
-                for (s_fields[i + 1 ..]) |fb| {
-                    const cb: u8 = @field(Options.shorts, fb.name);
-                    if (ca == cb) {
-                        @compileError("Duplicate short flag '" ++ [_]u8{ca} ++ "' on fields `" ++
-                            fa.name ++ "` and `" ++ fb.name ++ "`");
-                    }
-                }
-            }
-        }
-    }
-
-    // Look for validation functions at comptime
-    comptime {
-        for (fields(Options)) |field| {
-            const fn_name = "validate_" ++ field.name;
-            if (@hasDecl(Options, fn_name)) {
-                const Fn = @TypeOf(@field(Options, fn_name));
-                const fn_info = @typeInfo(Fn);
-                if (fn_info != .@"fn")
-                    @compileError(fn_name ++ " must be a function");
-                const params = fn_info.@"fn".params;
-                const expected_type = switch (@typeInfo(field.type)) {
-                    .optional => |opt| opt.child,
-                    else => field.type,
-                };
-                if (params.len != 1 or params[0].type != expected_type)
-                    @compileError(fn_name ++ " must take exactly one argument of type " ++
-                        @typeName(expected_type));
-            }
-        }
-    }
+    const cfg_help_enabled = configFlag(Options, "help_enabled", true);
+    const cfg_allow_unknown = configFlag(Options, "allow_unknown", false);
 
     // Require all Options fields to have defaults so initDefaults() is always safe.
     for (std.meta.fields(Options)) |field| {
@@ -686,6 +408,11 @@ pub fn Chip(comptime Options: type) type {
 
     if (cfg_help_enabled and @hasField(Options, "help"))
         @compileError("Field named `help` conflicts with built-in --help handling.");
+
+    comptime {
+        checkShortsCollisions(Options, "");
+        checkValidateFns(Options, "");
+    }
 
     return struct {
         arena: std.heap.ArenaAllocator,
@@ -740,24 +467,7 @@ pub fn Chip(comptime Options: type) type {
                 var buff = std.io.Writer.Allocating.init(allocator);
                 errdefer buff.deinit();
 
-                try buff.writer.print("prog: {s}\n", .{self.prog});
-                try buff.writer.print("had_help: {}\n", .{self.had_help});
-
-                try buff.writer.print("positionals: [", .{});
-                for (self.positionals, 0..) |p, i| {
-                    if (i > 0) try buff.writer.print(", ", .{});
-                    try buff.writer.print("{s}", .{p});
-                }
-                try buff.writer.print("]\n", .{});
-
-                if (self.unknown_options.len > 0) {
-                    try buff.writer.print("unknown_options: [", .{});
-                    for (self.unknown_options, 0..) |u, i| {
-                        if (i > 0) try buff.writer.print(", ", .{});
-                        try buff.writer.print("{s}", .{u});
-                    }
-                    try buff.writer.print("]\n", .{});
-                }
+                try emitResultHeader(self.prog, self.had_help, self.positionals, self.unknown_options, &buff.writer);
 
                 try buff.writer.print("opts:\n", .{});
                 inline for (fields(Options)) |field| {
@@ -837,8 +547,13 @@ pub fn Chip(comptime Options: type) type {
             }
 
             var opts: Options = .{};
-            try self.parseStructOpts(
+            try initializeEnvOptsImpl(Options, &opts, allocator);
+            // Populate the options and overwrite initialized values.
+            try parseStructOptsImpl(
                 Options,
+                cfg_help_enabled,
+                cfg_allow_unknown,
+                &self.iter,
                 &opts,
                 &positionals,
                 &unknown,
@@ -879,175 +594,352 @@ pub fn Chip(comptime Options: type) type {
         pub fn deinit(self: *Self) void {
             self.arena.deinit();
         }
-
-        fn parseStructOpts(
-            self: *Self,
-            comptime T: type,
-            target: *T,
-            positionals: *std.ArrayList([]const u8),
-            unknown: *std.ArrayList([]const u8),
-            had_help: *bool,
-            allocator: Allocator,
-        ) !void {
-            while (self.iter.next()) |opt| {
-                if (strEql(opt, "--")) {
-                    while (self.iter.next()) |pos| try positionals.append(allocator, pos);
-                    break;
-                }
-                if (cfg_help_enabled and strEql(opt, "--help")) {
-                    had_help.* = true;
-                    // Tokens must be drained after help
-                    while (self.iter.next()) |_| {}
-                    return;
-                }
-                if (startsWith(u8, opt, "--")) {
-                    var key = opt[2..];
-                    var inline_val: ?[]const u8 = null;
-                    if (strIndexOfScalar(key, '=')) |i| {
-                        inline_val = key[i + 1 ..];
-                        key = key[0..i];
-                    }
-                    const negated = startsWith(u8, key, "no-");
-                    if (negated) key = key[3..];
-                    const original_key = key;
-
-                    const normalized_key = if (strIndexOfScalar(key, '-') != null) blk: {
-                        const buff = try allocator.dupe(u8, key);
-                        std.mem.replaceScalar(u8, buff, '-', '_');
-                        break :blk buff;
-                    } else key;
-
-                    var matched = false;
-                    blk: inline for (std.meta.fields(T)) |field| {
-                        if (strEql(normalized_key, field.name)) {
-                            const base_type = switch (@typeInfo(field.type)) {
-                                .optional => |o| o.child,
-                                else => field.type,
-                            };
-                            if (negated and base_type != bool) return error.CannotNegate;
-                            @field(target.*, field.name) = try self.parseNext(
-                                field.type,
-                                negated,
-                                inline_val,
-                                allocator,
-                            );
-                            matched = true;
-                            break :blk;
-                        }
-                    }
-                    if (!matched) {
-                        if (cfg_allow_unknown) try unknown.append(allocator, original_key) else return error.UnknownOption;
-                    }
-                } else if (startsWith(u8, opt, "-")) {
-                    if (opt.len > 2) {
-                        for (opt[1..]) |o| {
-                            var matched = false;
-                            if (@hasDecl(T, "shorts")) {
-                                inline for (fields(T)) |field| {
-                                    if (@hasField(@TypeOf(T.shorts), field.name)) {
-                                        const s: u8 = @field(T.shorts, field.name);
-                                        if (o == s) {
-                                            const base_type = switch (@typeInfo(field.type)) {
-                                                .optional => |p| p.child,
-                                                else => field.type,
-                                            };
-                                            if (base_type != bool) return error.CombinedShortRequiresValue;
-                                            @field(target.*, field.name) = try self.parseNext(
-                                                field.type,
-                                                false,
-                                                null,
-                                                allocator,
-                                            );
-                                            matched = true;
-                                        }
-                                    }
-                                }
-                            }
-                            if (!matched) {
-                                if (cfg_allow_unknown) {
-                                    const char_str = try allocator.dupe(u8, &[_]u8{o});
-                                    try unknown.append(allocator, char_str);
-                                } else return error.UnknownOption;
-                            }
-                        }
-                    } else {
-                        const key = opt[1..];
-                        var matched = false;
-                        if (@hasDecl(T, "shorts")) {
-                            inline for (fields(T)) |field| {
-                                if (@hasField(@TypeOf(T.shorts), field.name)) {
-                                    const s: u8 = @field(T.shorts, field.name);
-                                    if (key.len == 1 and key[0] == s) {
-                                        @field(target.*, field.name) = try self.parseNext(
-                                            field.type,
-                                            false,
-                                            null,
-                                            allocator,
-                                        );
-                                        matched = true;
-                                    }
-                                }
-                            }
-                        }
-                        if (!matched) {
-                            if (cfg_allow_unknown) try unknown.append(allocator, key) else return error.UnknownOption;
-                        }
-                    }
-                } else try positionals.append(allocator, opt);
-            }
-        }
-
-        fn parseNext(
-            self: *Self,
-            comptime FieldType: type,
-            negated: bool,
-            inline_val: ?[]const u8,
-            allocator: Allocator,
-        ) !FieldType {
-            return switch (FieldType) {
-                bool => blk: {
-                    if (inline_val != null) return error.BoolCannotHaveValue;
-                    break :blk !negated;
-                },
-                []const u8 => blk: {
-                    const s = inline_val orelse self.iter.next() orelse return error.MissingValue;
-                    break :blk try allocator.dupe(u8, s);
-                },
-                []const []const u8 => blk: {
-                    var list: std.ArrayList([]const u8) = .empty;
-                    if (inline_val) |v| try list.append(allocator, try allocator.dupe(u8, v));
-                    while (self.iter.peek()) |s| {
-                        if (looksLikeOptionToken(s)) break;
-                        _ = self.iter.next();
-                        try list.append(allocator, try allocator.dupe(u8, s));
-                    }
-                    if (list.items.len == 0) return error.MissingValue;
-                    break :blk try list.toOwnedSlice(allocator);
-                },
-                else => switch (@typeInfo(FieldType)) {
-                    .int => blk: {
-                        const s = inline_val orelse self.iter.next() orelse return error.MissingValue;
-                        break :blk try std.fmt.parseInt(FieldType, s, 10);
-                    },
-                    .float => blk: {
-                        const s = inline_val orelse self.iter.next() orelse return error.MissingValue;
-                        break :blk try std.fmt.parseFloat(FieldType, s);
-                    },
-                    .optional => |opt| try self.parseNext(
-                        opt.child,
-                        negated,
-                        inline_val,
-                        allocator,
-                    ),
-                    else => @compileError("Unsupported type: " ++ @typeName(FieldType)),
-                },
-            };
-        }
     };
 }
 
+// --- Module-level helpers ---
+
+/// Reads a boolean config flag from `Options.config`, returning `default` if absent.
+fn configFlag(comptime Options: type, comptime field: []const u8, comptime default: bool) bool {
+    return if (@hasDecl(Options, "config") and @hasField(@TypeOf(Options.config), field))
+        @field(Options.config, field)
+    else
+        default;
+}
+
+/// Reads a string config value from `Options.config`, returning `default` if absent.
+fn configStr(comptime Options: type, comptime field: []const u8, comptime default: []const u8) []const u8 {
+    return if (@hasDecl(Options, "config") and @hasField(@TypeOf(Options.config), field))
+        @field(Options.config, field)
+    else
+        default;
+}
+
+/// Compile-time check that no two fields in `T.shorts` share the same character.
+/// `context` is appended to the error message (e.g. " in subcommand `serve`").
+fn checkShortsCollisions(comptime T: type, comptime context: []const u8) void {
+    if (!@hasDecl(T, "shorts")) return;
+    const s_fields = fields(@TypeOf(T.shorts));
+    for (s_fields, 0..) |fa, i| {
+        const ca: u8 = @field(T.shorts, fa.name);
+        for (s_fields[i + 1 ..]) |fb| {
+            const cb: u8 = @field(T.shorts, fb.name);
+            if (ca == cb) {
+                @compileError("Duplicate short flag '" ++ [_]u8{ca} ++ "' on fields `" ++
+                    fa.name ++ "` and `" ++ fb.name ++ "`" ++ context);
+            }
+        }
+    }
+}
+
+/// Compile-time check that every `validate_<field>` declaration in `T` is a
+/// function with the correct signature. `context` is appended to error messages.
+fn checkValidateFns(comptime T: type, comptime context: []const u8) void {
+    for (fields(T)) |field| {
+        const fn_name = "validate_" ++ field.name;
+        if (@hasDecl(T, fn_name)) {
+            const Fn = @TypeOf(@field(T, fn_name));
+            const fn_info = @typeInfo(Fn);
+            if (fn_info != .@"fn")
+                @compileError(fn_name ++ context ++ " must be a function");
+            const params = fn_info.@"fn".params;
+            const expected_type = switch (@typeInfo(field.type)) {
+                .optional => |opt| opt.child,
+                else => field.type,
+            };
+            if (params.len != 1 or params[0].type != expected_type)
+                @compileError(fn_name ++ context ++ " must take one argument of type " ++
+                    @typeName(expected_type));
+        }
+    }
+}
+
+fn initializeEnvOptsImpl(
+    comptime T: type,
+    target: *T,
+    allocator: Allocator,
+) !void {
+    const prefix = comptime configStr(T, "env_prefix", "");
+    var envMap = try std.process.getEnvMap(allocator);
+    defer envMap.deinit();
+    var iter = envMap.iterator();
+    while (iter.next()) |env| {
+        const key = env.key_ptr.*;
+        if (comptime prefix.len > 0) {
+            if (key.len < prefix.len) continue;
+            if (!std.ascii.eqlIgnoreCase(key[0..prefix.len], prefix)) continue;
+        }
+        const unprefixed = if (comptime prefix.len > 0) key[prefix.len..] else key;
+        fieldloop: inline for (fields(T)) |field| {
+            // []const []const u8 has no meaningful single-value env representation; skip.
+            if (comptime field.type == []const []const u8) continue;
+            if (std.ascii.eqlIgnoreCase(unprefixed, field.name)) {
+                @field(target.*, field.name) = try parseEnvValueImpl(field.type, env.value_ptr.*, allocator);
+                break :fieldloop;
+            }
+        }
+    }
+}
+
+fn parseEnvValueImpl(comptime FieldType: type, value: []const u8, allocator: Allocator) !FieldType {
+    return switch (FieldType) {
+        bool => std.ascii.eqlIgnoreCase(value, "1") or
+            std.ascii.eqlIgnoreCase(value, "true") or
+            std.ascii.eqlIgnoreCase(value, "yes"),
+        []const u8 => try allocator.dupe(u8, value),
+        else => switch (@typeInfo(FieldType)) {
+            .int => try std.fmt.parseInt(FieldType, value, 10),
+            .float => try std.fmt.parseFloat(FieldType, value),
+            .@"enum" => blk: {
+                if (std.meta.stringToEnum(FieldType, value)) |val| break :blk val;
+                if (strIndexOfScalar(value, '-') != null) {
+                    const normalized = try allocator.dupe(u8, value);
+                    std.mem.replaceScalar(u8, normalized, '-', '_');
+                    if (std.meta.stringToEnum(FieldType, normalized)) |val| break :blk val;
+                }
+                return error.InvalidEnumValue;
+            },
+            .optional => |opt| try parseEnvValueImpl(opt.child, value, allocator),
+            else => @compileError("Unsupported env var type: " ++ @typeName(FieldType)),
+        },
+    };
+}
+
+/// Shared flag-parsing loop used by both `Chizel` and `Chip`.
+fn parseStructOptsImpl(
+    comptime T: type,
+    comptime cfg_help_enabled: bool,
+    comptime cfg_allow_unknown: bool,
+    iter: *ErasedIter,
+    target: *T,
+    positionals: *std.ArrayList([]const u8),
+    unknown: *std.ArrayList([]const u8),
+    had_help: *bool,
+    allocator: Allocator,
+) !void {
+    while (iter.next()) |opt| {
+        if (strEql(opt, "--")) {
+            while (iter.next()) |pos| try positionals.append(allocator, pos);
+            break;
+        }
+        if (cfg_help_enabled and strEql(opt, "--help")) {
+            had_help.* = true;
+            // Tokens must be drained after a call to help
+            while (iter.next()) |_| {}
+            return;
+        }
+        if (startsWith(u8, opt, "--")) {
+            var key = opt[2..];
+            var inline_val: ?[]const u8 = null;
+            if (strIndexOfScalar(key, '=')) |i| {
+                inline_val = key[i + 1 ..];
+                key = key[0..i];
+            }
+            // Capture original key in case it needs to get stored in unknown options
+
+            const original_key = key;
+            const negated = startsWith(u8, key, "no-");
+            if (negated) key = key[3..];
+
+            // Long opts arrive as --long-opt so convert `-` to `_` before
+            // matching against struct field names. Save the original for
+            // unknown-option reporting so callers see the flag as typed.
+            // For better performance we only perform the normalization
+            // if a '-' is found in the string.
+            // Each normalization requires a heap allocation so if we can
+            // skip for non-long options it's probably better.
+            const normalized_key = if (strIndexOfScalar(key, '-') != null) blk: {
+                const buff = try allocator.dupe(u8, key);
+                std.mem.replaceScalar(u8, buff, '-', '_');
+                break :blk buff;
+            } else key;
+
+            var matched = false;
+            blk: inline for (std.meta.fields(T)) |field| {
+                if (strEql(normalized_key, field.name)) {
+                    const base_type = switch (@typeInfo(field.type)) {
+                        .optional => |o| o.child,
+                        else => field.type,
+                    };
+                    if (negated and base_type != bool) return error.CannotNegate;
+                    @field(target.*, field.name) = try parseNextImpl(
+                        field.type,
+                        iter,
+                        negated,
+                        inline_val,
+                        allocator,
+                    );
+                    matched = true;
+                    break :blk;
+                }
+            }
+            if (!matched) {
+                if (cfg_allow_unknown) try unknown.append(allocator, original_key) else return error.UnknownOption;
+            }
+        } else if (startsWith(u8, opt, "-")) {
+            if (opt.len > 2) {
+                for (opt[1..]) |o| {
+                    var matched = false;
+                    if (@hasDecl(T, "shorts")) {
+                        inline for (fields(T)) |field| {
+                            if (@hasField(@TypeOf(T.shorts), field.name)) {
+                                const s: u8 = @field(T.shorts, field.name);
+                                if (o == s) {
+                                    const base_type = switch (@typeInfo(field.type)) {
+                                        .optional => |p| p.child,
+                                        else => field.type,
+                                    };
+                                    if (base_type != bool) return error.CombinedShortRequiresValue;
+                                    @field(target.*, field.name) = try parseNextImpl(
+                                        field.type,
+                                        iter,
+                                        false,
+                                        null,
+                                        allocator,
+                                    );
+                                    matched = true;
+                                }
+                            }
+                        }
+                    }
+                    if (!matched) {
+                        if (cfg_allow_unknown) {
+                            const char_str = try allocator.dupe(u8, &[_]u8{o});
+                            try unknown.append(allocator, char_str);
+                        } else return error.UnknownOption;
+                    }
+                }
+            } else {
+                const key = opt[1..];
+                var matched = false;
+                if (@hasDecl(T, "shorts")) {
+                    inline for (fields(T)) |field| {
+                        if (@hasField(@TypeOf(T.shorts), field.name)) {
+                            const s: u8 = @field(T.shorts, field.name);
+                            if (key.len == 1 and key[0] == s) {
+                                @field(target.*, field.name) = try parseNextImpl(
+                                    field.type,
+                                    iter,
+                                    false,
+                                    null,
+                                    allocator,
+                                );
+                                matched = true;
+                            }
+                        }
+                    }
+                }
+                if (!matched) {
+                    if (cfg_allow_unknown) try unknown.append(allocator, key) else return error.UnknownOption;
+                }
+            }
+        } else try positionals.append(allocator, opt);
+    }
+}
+
+/// Parses the next token(s) from `iter` as a value of type `FieldType`.
+fn parseNextImpl(
+    comptime FieldType: type,
+    iter: *ErasedIter,
+    negated: bool,
+    inline_val: ?[]const u8,
+    allocator: Allocator,
+) !FieldType {
+    return switch (FieldType) {
+        bool => blk: {
+            if (inline_val != null) return error.BoolCannotHaveValue;
+            break :blk !negated;
+        },
+
+        []const u8 => blk: {
+            const s = inline_val orelse iter.next() orelse return error.MissingValue;
+            break :blk try allocator.dupe(u8, s);
+        },
+
+        // Consumes tokens until the next flag token or end of args.
+        // looksLikeOptionToken allows negative numbers like "-1" or "-3.14"
+        // to be consumed as values rather than stopping the slice early.
+        // An inline value (--flag=foo) is treated as the first element.
+        []const []const u8 => blk: {
+            var list: std.ArrayList([]const u8) = .empty;
+            if (inline_val) |v| try list.append(allocator, try allocator.dupe(u8, v));
+            while (iter.peek()) |s| {
+                if (looksLikeOptionToken(s)) break;
+                _ = iter.next();
+                try list.append(allocator, try allocator.dupe(u8, s));
+            }
+            if (list.items.len == 0) return error.MissingValue;
+            break :blk try list.toOwnedSlice(allocator);
+        },
+
+        else => switch (@typeInfo(FieldType)) {
+            .int => blk: {
+                const s = inline_val orelse iter.next() orelse return error.MissingValue;
+                break :blk try std.fmt.parseInt(FieldType, s, 10);
+            },
+            .float => blk: {
+                const s = inline_val orelse iter.next() orelse return error.MissingValue;
+                break :blk try std.fmt.parseFloat(FieldType, s);
+            },
+            .@"enum" => blk: {
+                const s = inline_val orelse iter.next() orelse return error.MissingValue;
+                if (std.meta.stringToEnum(FieldType, s)) |val| break :blk val;
+                // Normalize hyphens to underscores and retry "json-pretty" -> "json_pretty"
+                if (strIndexOfScalar(s, '-') != null) {
+                    const normalized = try allocator.dupe(u8, s);
+                    std.mem.replaceScalar(u8, normalized, '-', '_');
+                    if (std.meta.stringToEnum(FieldType, normalized)) |val| break :blk val;
+                }
+                return error.InvalidEnumValue;
+            },
+            .optional => |opt| try parseNextImpl(
+                opt.child,
+                iter,
+                negated,
+                inline_val,
+                allocator,
+            ),
+            else => @compileError("Unsupported type: " ++ @typeName(FieldType)),
+        },
+    };
+}
+
+/// Writes the common header of `emitParsed`
+/// eg. (prog, had_help, positionals, unknown_options).
+fn emitResultHeader(
+    prog: []const u8,
+    had_help: bool,
+    positionals: []const []const u8,
+    unknown_options: []const []const u8,
+    writer: anytype,
+) !void {
+    try writer.print("prog: {s}\n", .{prog});
+    try writer.print("had_help: {}\n", .{had_help});
+
+    try writer.print("positionals: [", .{});
+    for (positionals, 0..) |p, i| {
+        if (i > 0) try writer.print(", ", .{});
+        try writer.print("{s}", .{p});
+    }
+    try writer.print("]\n", .{});
+
+    if (unknown_options.len > 0) {
+        try writer.print("unknown_options: [", .{});
+        for (unknown_options, 0..) |u, i| {
+            if (i > 0) try writer.print(", ", .{});
+            try writer.print("{s}", .{u});
+        }
+        try writer.print("]\n", .{});
+    }
+}
+
+// Simple wrappers for string operations to maintain less verbose code.
 fn strIndexOfScalar(key: []const u8, needle: u8) ?usize {
     return std.mem.indexOfScalar(u8, key, needle);
+}
+
+fn strEql(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
 }
 
 // Converts a Zig field name '_' to a CLI flag name '-' at comptime.
@@ -1058,10 +950,6 @@ fn fieldToFlag(comptime name: []const u8) [name.len]u8 {
         for (name, 0..) |c, i| buf[i] = if (c == '_') '-' else c;
         return buf;
     }
-}
-
-fn strEql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
 }
 
 // Type erased iterator used by the parser.
@@ -1116,6 +1004,7 @@ fn emitValue(comptime T: type, val: T, writer: anytype) !void {
         },
         else => switch (@typeInfo(T)) {
             .int, .float => try writer.print("{}", .{val}),
+            .@"enum" => try writer.print("{s}", .{@tagName(val)}),
             .optional => |opt| {
                 if (val) |inner| {
                     try emitValue(opt.child, inner, writer);
