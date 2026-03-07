@@ -73,6 +73,23 @@ pub fn Chizel(comptime Options: type) type {
     else
         false;
 
+    comptime {
+        for (union_info.fields) |ufield| {
+            if (@hasDecl(ufield.type, "shorts")) {
+                const s_fields = fields(@TypeOf(ufield.type.shorts));
+                for (s_fields, 0..) |fa, i| {
+                    const ca: u8 = @field(ufield.type.shorts, fa.name);
+                    for (s_fields[i + 1 ..]) |fb| {
+                        const cb: u8 = @field(ufield.type.shorts, fb.name);
+                        if (ca == cb)
+                            @compileError("Duplicate short flag '" ++ [_]u8{ca} ++ "' on fields `" ++
+                                fa.name ++ "` and `" ++ fb.name ++ "` in subcommand `" ++ ufield.name ++ "`");
+                    }
+                }
+            }
+        }
+    }
+
     return struct {
         arena: std.heap.ArenaAllocator,
         iter: ErasedIter,
@@ -199,7 +216,8 @@ pub fn Chizel(comptime Options: type) type {
                             @field(ufield.type.help, "_cmd")
                         else
                             "";
-                        try buff.writer.print("  {s}", .{ufield.name});
+                        const flag_name = comptime fieldToFlag(ufield.name);
+                        try buff.writer.print("  {s}", .{&flag_name});
                         const padding = max_subcmd_len - ufield.name.len + 3;
                         for (0..padding) |_| try buff.writer.writeByte(' ');
                         try buff.writer.print("{s}\n", .{desc});
@@ -214,8 +232,13 @@ pub fn Chizel(comptime Options: type) type {
                             inline for (std.meta.fields(ufield.type)) |field| {
                                 const has_help = @hasDecl(ufield.type, "help") and
                                     @hasField(@TypeOf(ufield.type.help), field.name);
+                                const has_short = @hasDecl(ufield.type, "shorts") and @hasField(@TypeOf(ufield.type.shorts), field.name);
                                 const desc = if (has_help) @field(ufield.type.help, field.name) else "";
-                                try buff.writer.print("  --{s}  {s}\n", .{ field.name, desc });
+                                const flag_name = comptime fieldToFlag(field.name);
+                                if (has_short) {
+                                    const s = @field(ufield.type.shorts, field.name);
+                                    try buff.writer.print(" -{c} --{s}  {s}\n", .{ s, &flag_name, desc });
+                                } else try buff.writer.print("  --{s}  {s}\n", .{ &flag_name, desc });
                             }
                             break :outer;
                         }
@@ -275,11 +298,17 @@ pub fn Chizel(comptime Options: type) type {
                         }
                     }
                 }
+                // Need to replace '-' with '_' to match the struct field
                 const subcmd = self.iter.next() orelse return error.MissingSubcommand;
+                const normalized_sub = if (strIndexOfScalar(subcmd, '-') != null) tmp: {
+                    const buf = try allocator.dupe(u8, subcmd);
+                    std.mem.replaceScalar(u8, buf, '-', '_');
+                    break :tmp buf;
+                } else subcmd;
                 var result: Options = undefined;
                 var matched = false;
                 inline for (@typeInfo(Options).@"union".fields) |f| {
-                    if (!matched and strEql(subcmd, f.name)) {
+                    if (!matched and strEql(normalized_sub, f.name)) {
                         var sub: f.type = .{};
                         try self.parseStructOpts(
                             f.type,
@@ -293,7 +322,11 @@ pub fn Chizel(comptime Options: type) type {
                         matched = true;
                     }
                 }
-                if (!matched) return error.UnknownSubcommand;
+                // TODO: Crashing the program without explaining the problem
+                // is pretty harsh. Find a way to make errors more pleasant
+                // and informative for subcommands.
+                if (!matched)
+                    return error.UnknownSubcommand;
                 break :blk result;
             };
 
@@ -336,9 +369,9 @@ pub fn Chizel(comptime Options: type) type {
                     }
                     // Capture original key in case it needs to get stored in
                     // unknown options
-                    const original_key = key;
                     const negated = startsWith(u8, key, "no-");
                     if (negated) key = key[3..];
+                    const original_key = key;
 
                     // Long opts arrive as --long-opt so convert `-` to `_` before
                     // matching against struct field names. Save the original for
@@ -377,6 +410,11 @@ pub fn Chizel(comptime Options: type) type {
                 } else if (startsWith(u8, opt, "-")) {
                     if (opt.len > 2) {
                         for (opt[1..]) |o| {
+                            if (cfg_help_enabled and o == 'h') {
+                                had_help.* = true;
+                                while (self.iter.next()) |_| {}
+                                return;
+                            }
                             var matched = false;
                             if (@hasDecl(T, "shorts")) {
                                 inline for (fields(T)) |field| {
@@ -541,6 +579,21 @@ pub fn Chip(comptime Options: type) type {
     else
         false;
 
+    comptime {
+        if (@hasDecl(Options, "shorts")) {
+            const s_fields = fields(@TypeOf(Options.shorts));
+            for (s_fields, 0..) |fa, i| {
+                const ca: u8 = @field(Options.shorts, fa.name);
+                for (s_fields[i + 1 ..]) |fb| {
+                    const cb: u8 = @field(Options.shorts, fb.name);
+                    if (ca == cb)
+                        @compileError("Duplicate short flag '" ++ [_]u8{ca} ++ "' on fields `" ++
+                            fa.name ++ "` and `" ++ fb.name ++ "`");
+                }
+            }
+        }
+    }
+
     // Require all Options fields to have defaults so initDefaults() is always safe.
     for (std.meta.fields(Options)) |field| {
         if (field.default_value_ptr == null) {
@@ -663,21 +716,21 @@ pub fn Chip(comptime Options: type) type {
                 }
 
                 inline for (fields(Options)) |field| {
-                    if (@hasField(@TypeOf(Options.help), field.name)) {
-                        const help: []const u8 = @field(Options.help, field.name);
-                        const has_short = @hasDecl(Options, "shorts") and
-                            @hasField(@TypeOf(Options.shorts), field.name);
-                        if (has_short) {
-                            const s: u8 = @field(Options.shorts, field.name);
-                            try buff.writer.print("  -{c}, --{s}", .{ s, field.name });
-                        } else {
-                            try buff.writer.print("      --{s}", .{field.name});
-                        }
-
-                        const padding = max_name_len - field.name.len + 3;
-                        for (0..padding) |_| try buff.writer.writeByte(' ');
-                        try buff.writer.print("{s}\n", .{help});
+                    const has_help = @hasField(@TypeOf(Options.help), field.name);
+                    const help: []const u8 = if (has_help) @field(Options.help, field.name) else "";
+                    const has_short = @hasDecl(Options, "shorts") and
+                        @hasField(@TypeOf(Options.shorts), field.name);
+                    const flag_name = comptime fieldToFlag(field.name);
+                    if (has_short) {
+                        const s: u8 = @field(Options.shorts, field.name);
+                        try buff.writer.print("  -{c}, --{s}", .{ s, &flag_name });
+                    } else {
+                        try buff.writer.print("      --{s}", .{&flag_name});
                     }
+
+                    const padding = max_name_len - field.name.len + 3;
+                    for (0..padding) |_| try buff.writer.writeByte(' ');
+                    try buff.writer.print("{s}\n", .{help});
                 }
 
                 return buff.toOwnedSlice();
@@ -765,9 +818,9 @@ pub fn Chip(comptime Options: type) type {
                         inline_val = key[i + 1 ..];
                         key = key[0..i];
                     }
-                    const original_key = key;
                     const negated = startsWith(u8, key, "no-");
                     if (negated) key = key[3..];
+                    const original_key = key;
 
                     const normalized_key = if (strIndexOfScalar(key, '-') != null) blk: {
                         const buff = try allocator.dupe(u8, key);
@@ -799,6 +852,11 @@ pub fn Chip(comptime Options: type) type {
                 } else if (startsWith(u8, opt, "-")) {
                     if (opt.len > 2) {
                         for (opt[1..]) |o| {
+                            if (cfg_help_enabled and o == 'h') {
+                                had_help.* = true;
+                                while (self.iter.next()) |_| {}
+                                return;
+                            }
                             var matched = false;
                             if (@hasDecl(T, "shorts")) {
                                 inline for (fields(T)) |field| {
@@ -908,6 +966,16 @@ fn strIndexOfScalar(key: []const u8, needle: u8) ?usize {
     return std.mem.indexOfScalar(u8, key, needle);
 }
 
+// Converts a Zig field name '_' to a CLI flag name '-' at comptime.
+// "dry_run" -> "dry-run"
+fn fieldToFlag(comptime name: []const u8) [name.len]u8 {
+    comptime {
+        var buf: [name.len]u8 = undefined;
+        for (name, 0..) |c, i| buf[i] = if (c == '_') '-' else c;
+        return buf;
+    }
+}
+
 fn strEql(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
@@ -921,17 +989,21 @@ const ErasedIter = struct {
     ptr: *anyopaque,
     next_fn: *const fn (*anyopaque) ?[]const u8,
     peeked: ?[]const u8 = null,
+    has_peeked: bool = false,
 
     fn next(self: *@This()) ?[]const u8 {
-        if (self.peeked) |p| {
-            self.peeked = null;
-            return p;
+        if (self.has_peeked) {
+            self.has_peeked = false;
+            return self.peeked;
         }
         return self.next_fn(self.ptr);
     }
 
     fn peek(self: *@This()) ?[]const u8 {
-        if (self.peeked == null) self.peeked = self.next_fn(self.ptr);
+        if (!self.has_peeked) {
+            self.peeked = self.next_fn(self.ptr);
+            self.has_peeked = true;
+        }
         return self.peeked;
     }
 };

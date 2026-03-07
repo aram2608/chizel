@@ -7,14 +7,22 @@ const Commands = union(enum) {
         foo: bool = false,
 
         pub const help = .{ .foo = "Nested bar bro" };
+        pub const shorts = .{ .foo = 'f' };
     },
     bar: struct {
         bar: bool = false,
 
         pub const help = .{ .bar = "Nested bar bro" };
+        pub const shorts = .{ .bar = 'b' };
     },
 
-    pub const help = .{ .foo = "Foo man", .bar = "Bar man" };
+    long_name: struct {
+        long_opt: bool = false,
+
+        pub const help = .{ .long_opt = "I am a long opt " };
+    },
+
+    pub const help = .{ .foo = "Foo man", .bar = "Bar man", .long_name = "Long name" };
     pub const config = .{ .help_enabled = true };
 };
 
@@ -43,6 +51,9 @@ pub fn main() !void {
         },
         .bar => |o| {
             if (o.bar) std.debug.print("BAR FOUND\n", .{});
+        },
+        .long_name => |o| {
+            if (o.long_opt) std.debug.print("LONG OPT FOUND", .{});
         },
     }
 
