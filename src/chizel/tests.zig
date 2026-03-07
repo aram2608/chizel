@@ -26,7 +26,7 @@ fn chizelParser(comptime Cmds: type, iter: *SliceIter) Chizel(Cmds) {
 
 // Boolean
 
-test "ziggy boolean: absent keeps default false" {
+test "chip boolean: absent keeps default false" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -35,7 +35,7 @@ test "ziggy boolean: absent keeps default false" {
     try testing.expect(!r.opts.verbose);
 }
 
-test "ziggy boolean: --flag sets true" {
+test "chip boolean: --flag sets true" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "--verbose" } };
     var p = chipParser(Opts, &iter);
@@ -44,7 +44,7 @@ test "ziggy boolean: --flag sets true" {
     try testing.expect(r.opts.verbose);
 }
 
-test "ziggy boolean: --no-flag sets false" {
+test "chip boolean: --no-flag sets false" {
     const Opts = struct { verbose: bool = true };
     var iter = SliceIter{ .tokens = &.{ "prog", "--no-verbose" } };
     var p = chipParser(Opts, &iter);
@@ -53,7 +53,7 @@ test "ziggy boolean: --no-flag sets false" {
     try testing.expect(!r.opts.verbose);
 }
 
-test "ziggy boolean: short flag" {
+test "chip boolean: short flag" {
     const Opts = struct {
         verbose: bool = false,
         pub const shorts = .{ .verbose = 'v' };
@@ -65,7 +65,7 @@ test "ziggy boolean: short flag" {
     try testing.expect(r.opts.verbose);
 }
 
-test "ziggy boolean: --no- on non-bool returns error" {
+test "chip boolean: --no- on non-bool returns error" {
     const Opts = struct { port: u16 = 8080 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--no-port" } };
     var p = chipParser(Opts, &iter);
@@ -75,7 +75,7 @@ test "ziggy boolean: --no- on non-bool returns error" {
 
 // Integer
 
-test "ziggy int: parsed correctly" {
+test "chip int: parsed correctly" {
     const Opts = struct { port: u16 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--port", "9090" } };
     var p = chipParser(Opts, &iter);
@@ -84,7 +84,7 @@ test "ziggy int: parsed correctly" {
     try testing.expectEqual(@as(u16, 9090), r.opts.port);
 }
 
-test "ziggy int: default used when absent" {
+test "chip int: default used when absent" {
     const Opts = struct { port: u16 = 8080 };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -93,7 +93,7 @@ test "ziggy int: default used when absent" {
     try testing.expectEqual(@as(u16, 8080), r.opts.port);
 }
 
-test "ziggy int: short flag" {
+test "chip int: short flag" {
     const Opts = struct {
         port: u16 = 0,
         pub const shorts = .{ .port = 'p' };
@@ -105,7 +105,7 @@ test "ziggy int: short flag" {
     try testing.expectEqual(@as(u16, 1000), r.opts.port);
 }
 
-test "ziggy int: missing value returns error" {
+test "chip int: missing value returns error" {
     const Opts = struct { port: u16 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--port" } };
     var p = chipParser(Opts, &iter);
@@ -113,7 +113,7 @@ test "ziggy int: missing value returns error" {
     try testing.expectError(error.MissingValue, p.parse());
 }
 
-test "ziggy int: bad value returns error" {
+test "chip int: bad value returns error" {
     const Opts = struct { port: u16 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--port", "abc" } };
     var p = chipParser(Opts, &iter);
@@ -123,7 +123,7 @@ test "ziggy int: bad value returns error" {
 
 // Float
 
-test "ziggy float: parsed correctly" {
+test "chip float: parsed correctly" {
     const Opts = struct { rate: f32 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--rate", "3.14" } };
     var p = chipParser(Opts, &iter);
@@ -134,7 +134,7 @@ test "ziggy float: parsed correctly" {
 
 // String
 
-test "ziggy string: parsed correctly" {
+test "chip string: parsed correctly" {
     const Opts = struct { host: []const u8 = "localhost" };
     var iter = SliceIter{ .tokens = &.{ "prog", "--host", "example.com" } };
     var p = chipParser(Opts, &iter);
@@ -143,7 +143,7 @@ test "ziggy string: parsed correctly" {
     try testing.expectEqualStrings("example.com", r.opts.host);
 }
 
-test "ziggy string: default used when absent" {
+test "chip string: default used when absent" {
     const Opts = struct { host: []const u8 = "localhost" };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -152,7 +152,7 @@ test "ziggy string: default used when absent" {
     try testing.expectEqualStrings("localhost", r.opts.host);
 }
 
-test "ziggy string: missing value returns error" {
+test "chip string: missing value returns error" {
     const Opts = struct { host: []const u8 = "localhost" };
     var iter = SliceIter{ .tokens = &.{ "prog", "--host" } };
     var p = chipParser(Opts, &iter);
@@ -162,7 +162,7 @@ test "ziggy string: missing value returns error" {
 
 // Optional
 
-test "ziggy optional: null when absent" {
+test "chip optional: null when absent" {
     const Opts = struct { name: ?[]const u8 = null };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -171,7 +171,7 @@ test "ziggy optional: null when absent" {
     try testing.expect(r.opts.name == null);
 }
 
-test "ziggy optional: value when present" {
+test "chip optional: value when present" {
     const Opts = struct { name: ?[]const u8 = null };
     var iter = SliceIter{ .tokens = &.{ "prog", "--name", "alice" } };
     var p = chipParser(Opts, &iter);
@@ -182,7 +182,7 @@ test "ziggy optional: value when present" {
 
 // String slice
 
-test "ziggy string slice: consumes multiple values" {
+test "chip string slice: consumes multiple values" {
     const Opts = struct { tags: []const []const u8 = &.{} };
     var iter = SliceIter{ .tokens = &.{ "prog", "--tags", "a", "b", "c" } };
     var p = chipParser(Opts, &iter);
@@ -194,7 +194,7 @@ test "ziggy string slice: consumes multiple values" {
     try testing.expectEqualStrings("c", r.opts.tags[2]);
 }
 
-test "ziggy string slice: stops at next flag" {
+test "chip string slice: stops at next flag" {
     const Opts = struct { tags: []const []const u8 = &.{}, verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "--tags", "a", "b", "--verbose" } };
     var p = chipParser(Opts, &iter);
@@ -204,7 +204,7 @@ test "ziggy string slice: stops at next flag" {
     try testing.expect(r.opts.verbose);
 }
 
-test "ziggy string slice: negative numbers not treated as flags" {
+test "chip string slice: negative numbers not treated as flags" {
     const Opts = struct { vals: []const []const u8 = &.{} };
     var iter = SliceIter{ .tokens = &.{ "prog", "--vals", "-1", "-2.5" } };
     var p = chipParser(Opts, &iter);
@@ -215,7 +215,7 @@ test "ziggy string slice: negative numbers not treated as flags" {
     try testing.expectEqualStrings("-2.5", r.opts.vals[1]);
 }
 
-test "ziggy string slice: missing value returns error" {
+test "chip string slice: missing value returns error" {
     const Opts = struct { tags: []const []const u8 = &.{} };
     var iter = SliceIter{ .tokens = &.{ "prog", "--tags" } };
     var p = chipParser(Opts, &iter);
@@ -225,7 +225,7 @@ test "ziggy string slice: missing value returns error" {
 
 // Positionals
 
-test "ziggy positionals: collected in order" {
+test "chip positionals: collected in order" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "foo", "bar", "baz" } };
     var p = chipParser(Opts, &iter);
@@ -237,7 +237,7 @@ test "ziggy positionals: collected in order" {
     try testing.expectEqualStrings("baz", r.positionals[2]);
 }
 
-test "ziggy positionals: mixed with flags" {
+test "chip positionals: mixed with flags" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "foo", "--verbose", "bar" } };
     var p = chipParser(Opts, &iter);
@@ -249,7 +249,7 @@ test "ziggy positionals: mixed with flags" {
 
 // prog
 
-test "ziggy prog: captured from argv[0]" {
+test "chip prog: captured from argv[0]" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{"myapp"} };
     var p = chipParser(Opts, &iter);
@@ -260,7 +260,7 @@ test "ziggy prog: captured from argv[0]" {
 
 // Unknown options
 
-test "ziggy unknown: error when allow_unknown=false" {
+test "chip unknown: error when allow_unknown=false" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "--typo" } };
     var p = chipParser(Opts, &iter);
@@ -268,7 +268,7 @@ test "ziggy unknown: error when allow_unknown=false" {
     try testing.expectError(error.UnknownOption, p.parse());
 }
 
-test "ziggy unknown: collected when allow_unknown=true" {
+test "chip unknown: collected when allow_unknown=true" {
     const Opts = struct {
         verbose: bool = false,
         pub const config = .{ .allow_unknown = true };
@@ -283,7 +283,7 @@ test "ziggy unknown: collected when allow_unknown=true" {
 
 // -- separator
 
-test "ziggy --: remaining tokens become positionals" {
+test "chip --: remaining tokens become positionals" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "--verbose", "--", "--not-a-flag", "pos" } };
     var p = chipParser(Opts, &iter);
@@ -297,7 +297,7 @@ test "ziggy --: remaining tokens become positionals" {
 
 // --help
 
-test "ziggy help: had_help true for --help" {
+test "chip help: had_help true for --help" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "--help" } };
     var p = chipParser(Opts, &iter);
@@ -306,7 +306,7 @@ test "ziggy help: had_help true for --help" {
     try testing.expect(r.had_help);
 }
 
-test "ziggy help: had_help true for -h" {
+test "chip help: had_help true for -h" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "-h" } };
     var p = chipParser(Opts, &iter);
@@ -315,7 +315,7 @@ test "ziggy help: had_help true for -h" {
     try testing.expect(r.had_help);
 }
 
-test "ziggy help: false when absent" {
+test "chip help: false when absent" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -326,7 +326,7 @@ test "ziggy help: false when absent" {
 
 // Error conditions
 
-test "ziggy already parsed returns error" {
+test "chip already parsed returns error" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -337,7 +337,7 @@ test "ziggy already parsed returns error" {
 
 // Inline key=value syntax
 
-test "ziggy inline value: --string=value" {
+test "chip inline value: --string=value" {
     const Opts = struct { host: []const u8 = "localhost" };
     var iter = SliceIter{ .tokens = &.{ "prog", "--host=example.com" } };
     var p = chipParser(Opts, &iter);
@@ -346,7 +346,7 @@ test "ziggy inline value: --string=value" {
     try testing.expectEqualStrings("example.com", r.opts.host);
 }
 
-test "ziggy inline value: --int=value" {
+test "chip inline value: --int=value" {
     const Opts = struct { port: u16 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--port=9090" } };
     var p = chipParser(Opts, &iter);
@@ -355,7 +355,7 @@ test "ziggy inline value: --int=value" {
     try testing.expectEqual(@as(u16, 9090), r.opts.port);
 }
 
-test "ziggy inline value: --float=value" {
+test "chip inline value: --float=value" {
     const Opts = struct { rate: f32 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--rate=1.5" } };
     var p = chipParser(Opts, &iter);
@@ -364,7 +364,7 @@ test "ziggy inline value: --float=value" {
     try testing.expectApproxEqRel(@as(f32, 1.5), r.opts.rate, 1e-5);
 }
 
-test "ziggy inline value: --optional=value" {
+test "chip inline value: --optional=value" {
     const Opts = struct { name: ?[]const u8 = null };
     var iter = SliceIter{ .tokens = &.{ "prog", "--name=alice" } };
     var p = chipParser(Opts, &iter);
@@ -373,7 +373,7 @@ test "ziggy inline value: --optional=value" {
     try testing.expectEqualStrings("alice", r.opts.name.?);
 }
 
-test "ziggy inline value: --bool=value returns error" {
+test "chip inline value: --bool=value returns error" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "--verbose=true" } };
     var p = chipParser(Opts, &iter);
@@ -381,7 +381,7 @@ test "ziggy inline value: --bool=value returns error" {
     try testing.expectError(error.BoolCannotHaveValue, p.parse());
 }
 
-test "ziggy inline value: --slice=first then continues consuming" {
+test "chip inline value: --slice=first then continues consuming" {
     const Opts = struct { tags: []const []const u8 = &.{} };
     var iter = SliceIter{ .tokens = &.{ "prog", "--tags=a", "b", "c" } };
     var p = chipParser(Opts, &iter);
@@ -395,7 +395,7 @@ test "ziggy inline value: --slice=first then continues consuming" {
 
 // Combined short flags
 
-test "ziggy combined shorts: -abc sets all three booleans" {
+test "chip combined shorts: -abc sets all three booleans" {
     const Opts = struct {
         alpha: bool = false,
         beta: bool = false,
@@ -411,7 +411,7 @@ test "ziggy combined shorts: -abc sets all three booleans" {
     try testing.expect(r.opts.gamma);
 }
 
-test "ziggy combined shorts: unknown char in group errors" {
+test "chip combined shorts: unknown char in group errors" {
     const Opts = struct {
         alpha: bool = false,
         pub const shorts = .{ .alpha = 'a' };
@@ -422,7 +422,7 @@ test "ziggy combined shorts: unknown char in group errors" {
     try testing.expectError(error.UnknownOption, p.parse());
 }
 
-test "ziggy combined shorts: unknown collected when allow_unknown" {
+test "chip combined shorts: unknown collected when allow_unknown" {
     const Opts = struct {
         alpha: bool = false,
         pub const shorts = .{ .alpha = 'a' };
@@ -439,7 +439,7 @@ test "ziggy combined shorts: unknown collected when allow_unknown" {
 
 // Subcommands (union(enum))
 
-test "ziggy subcommand: correct variant is active" {
+test "chizel subcommand: correct variant is active" {
     const Cmds = union(enum) {
         serve: struct { port: u16 = 8080 },
         build: struct { release: bool = false },
@@ -451,7 +451,7 @@ test "ziggy subcommand: correct variant is active" {
     try testing.expect(r.opts == .serve);
 }
 
-test "ziggy subcommand: flags parsed into the active variant" {
+test "chizel subcommand: flags parsed into the active variant" {
     const Cmds = union(enum) {
         serve: struct { port: u16 = 8080 },
         build: struct { release: bool = false },
@@ -463,7 +463,7 @@ test "ziggy subcommand: flags parsed into the active variant" {
     try testing.expectEqual(@as(u16, 9090), r.opts.serve.port);
 }
 
-test "ziggy subcommand: default used when flag absent" {
+test "chizel subcommand: default used when flag absent" {
     const Cmds = union(enum) {
         serve: struct { port: u16 = 8080 },
         build: struct { release: bool = false },
@@ -475,7 +475,7 @@ test "ziggy subcommand: default used when flag absent" {
     try testing.expect(!r.opts.build.release);
 }
 
-test "ziggy subcommand: shorts on subcommand struct" {
+test "chizel subcommand: shorts on subcommand struct" {
     const Cmds = union(enum) {
         serve: struct {
             port: u16 = 8080,
@@ -489,7 +489,7 @@ test "ziggy subcommand: shorts on subcommand struct" {
     try testing.expectEqual(@as(u16, 1234), r.opts.serve.port);
 }
 
-test "ziggy subcommand: missing subcommand returns error" {
+test "chizel subcommand: missing subcommand returns error" {
     const Cmds = union(enum) {
         serve: struct { port: u16 = 8080 },
     };
@@ -499,7 +499,7 @@ test "ziggy subcommand: missing subcommand returns error" {
     try testing.expectError(error.MissingSubcommand, p.parse());
 }
 
-test "ziggy subcommand: unknown subcommand returns error" {
+test "chizel subcommand: unknown subcommand returns error" {
     const Cmds = union(enum) {
         serve: struct { port: u16 = 8080 },
     };
@@ -509,7 +509,7 @@ test "ziggy subcommand: unknown subcommand returns error" {
     try testing.expectError(error.UnknownSubcommand, p.parse());
 }
 
-test "ziggy subcommand: positionals collected" {
+test "chizel subcommand: positionals collected" {
     const Cmds = union(enum) {
         run: struct { verbose: bool = false },
     };
@@ -522,7 +522,39 @@ test "ziggy subcommand: positionals collected" {
     try testing.expectEqualStrings("file2", r.positionals[1]);
 }
 
-test "ziggy subcommand: -- separator becomes positionals" {
+test "chizel subcommand: inline --string=value" {
+    const Cmds = union(enum) {
+        serve: struct { host: []const u8 = "localhost" },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve", "--host=example.com" } };
+    var p = chizelParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqualStrings("example.com", r.opts.serve.host);
+}
+
+test "chizel subcommand: inline --int=value" {
+    const Cmds = union(enum) {
+        serve: struct { port: u16 = 8080 },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve", "--port=9090" } };
+    var p = chizelParser(Cmds, &iter);
+    defer p.deinit();
+    const r = try p.parse();
+    try testing.expectEqual(@as(u16, 9090), r.opts.serve.port);
+}
+
+test "chizel subcommand: inline --bool=value returns error" {
+    const Cmds = union(enum) {
+        serve: struct { verbose: bool = false },
+    };
+    var iter = SliceIter{ .tokens = &.{ "prog", "serve", "--verbose=true" } };
+    var p = chizelParser(Cmds, &iter);
+    defer p.deinit();
+    try testing.expectError(error.BoolCannotHaveValue, p.parse());
+}
+
+test "chizel subcommand: -- separator becomes positionals" {
     const Cmds = union(enum) {
         run: struct { verbose: bool = false },
     };
@@ -536,7 +568,7 @@ test "ziggy subcommand: -- separator becomes positionals" {
     try testing.expectEqualStrings("pos", r.positionals[1]);
 }
 
-test "ziggy subcommand: --help sets had_help" {
+test "chizel subcommand: --help sets had_help" {
     const Cmds = union(enum) {
         serve: struct { port: u16 = 8080 },
     };
@@ -549,7 +581,7 @@ test "ziggy subcommand: --help sets had_help" {
 
 // Hyphenated long flags
 
-test "ziggy hyphen: --dry-run maps to dry_run field" {
+test "chizel hyphen: --dry-run maps to dry_run field" {
     const Opts = struct { dry_run: bool = false };
     var iter = SliceIter{ .tokens = &.{ "prog", "--dry-run" } };
     var p = chipParser(Opts, &iter);
@@ -558,7 +590,7 @@ test "ziggy hyphen: --dry-run maps to dry_run field" {
     try testing.expect(r.opts.dry_run);
 }
 
-test "ziggy hyphen: --output-file maps to output_file field" {
+test "chizel hyphen: --output-file maps to output_file field" {
     const Opts = struct { output_file: []const u8 = "" };
     var iter = SliceIter{ .tokens = &.{ "prog", "--output-file", "out.txt" } };
     var p = chipParser(Opts, &iter);
@@ -569,7 +601,7 @@ test "ziggy hyphen: --output-file maps to output_file field" {
 
 // CombinedShortRequiresValue
 
-test "ziggy combined shorts: non-bool in group returns error" {
+test "chizel combined shorts: non-bool in group returns error" {
     const Opts = struct {
         verbose: bool = false,
         port: u16 = 0,
@@ -583,7 +615,7 @@ test "ziggy combined shorts: non-bool in group returns error" {
 
 // Float error cases
 
-test "ziggy float: missing value returns error" {
+test "chizel float: missing value returns error" {
     const Opts = struct { rate: f32 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--rate" } };
     var p = chipParser(Opts, &iter);
@@ -591,7 +623,7 @@ test "ziggy float: missing value returns error" {
     try testing.expectError(error.MissingValue, p.parse());
 }
 
-test "ziggy float: bad value returns error" {
+test "chizel float: bad value returns error" {
     const Opts = struct { rate: f32 = 0 };
     var iter = SliceIter{ .tokens = &.{ "prog", "--rate", "abc" } };
     var p = chipParser(Opts, &iter);
@@ -601,7 +633,7 @@ test "ziggy float: bad value returns error" {
 
 // Optional non-string types
 
-test "ziggy optional int: null when absent" {
+test "chizel optional int: null when absent" {
     const Opts = struct { count: ?u32 = null };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -610,7 +642,7 @@ test "ziggy optional int: null when absent" {
     try testing.expect(r.opts.count == null);
 }
 
-test "ziggy optional int: value when present" {
+test "chizel optional int: value when present" {
     const Opts = struct { count: ?u32 = null };
     var iter = SliceIter{ .tokens = &.{ "prog", "--count", "42" } };
     var p = chipParser(Opts, &iter);
@@ -619,7 +651,7 @@ test "ziggy optional int: value when present" {
     try testing.expectEqual(@as(u32, 42), r.opts.count.?);
 }
 
-test "ziggy optional bool: value when present" {
+test "chizel optional bool: value when present" {
     const Opts = struct { flag: ?bool = null };
     var iter = SliceIter{ .tokens = &.{ "prog", "--flag" } };
     var p = chipParser(Opts, &iter);
@@ -630,7 +662,7 @@ test "ziggy optional bool: value when present" {
 
 // MissingProgramName
 
-test "ziggy error: empty iterator returns MissingProgramName" {
+test "chizel error: empty iterator returns MissingProgramName" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{} };
     var p = chipParser(Opts, &iter);
@@ -640,7 +672,7 @@ test "ziggy error: empty iterator returns MissingProgramName" {
 
 // prog basename stripping
 
-test "ziggy prog: basename stripped from full path" {
+test "chizel prog: basename stripped from full path" {
     const Opts = struct { verbose: bool = false };
     var iter = SliceIter{ .tokens = &.{"/usr/local/bin/myapp"} };
     var p = chipParser(Opts, &iter);
@@ -651,7 +683,7 @@ test "ziggy prog: basename stripped from full path" {
 
 // emitParsed smoke tests
 
-test "ziggy emitParsed: struct output contains field names" {
+test "chizel emitParsed: struct output contains field names" {
     const Opts = struct { port: u16 = 9090, verbose: bool = true };
     var iter = SliceIter{ .tokens = &.{"prog"} };
     var p = chipParser(Opts, &iter);
@@ -663,7 +695,7 @@ test "ziggy emitParsed: struct output contains field names" {
     try testing.expect(std.mem.indexOf(u8, out, "verbose") != null);
 }
 
-test "ziggy emitParsed: union output contains subcommand name" {
+test "chizel emitParsed: union output contains subcommand name" {
     const Cmds = union(enum) {
         serve: struct { port: u16 = 8080 },
         build: struct { release: bool = false },
@@ -680,7 +712,7 @@ test "ziggy emitParsed: union output contains subcommand name" {
 
 // printHelp smoke tests
 
-test "ziggy printHelp: struct output contains flag names" {
+test "chizel printHelp: struct output contains flag names" {
     const Opts = struct {
         host: []const u8 = "localhost",
         port: u16 = 8080,
@@ -698,7 +730,7 @@ test "ziggy printHelp: struct output contains flag names" {
     try testing.expect(std.mem.indexOf(u8, out, "Server host") != null);
 }
 
-test "ziggy printHelp: root --help shows subcommand list" {
+test "chizel printHelp: root --help shows subcommand list" {
     const Cmds = union(enum) {
         serve: struct {
             port: u16 = 8080,
@@ -721,7 +753,7 @@ test "ziggy printHelp: root --help shows subcommand list" {
     try testing.expect(std.mem.indexOf(u8, out, "Start the server") != null);
 }
 
-test "ziggy printHelp: subcommand --help shows subcommand options" {
+test "chizel printHelp: subcommand --help shows subcommand options" {
     const Cmds = union(enum) {
         serve: struct {
             port: u16 = 8080,

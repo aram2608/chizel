@@ -1,12 +1,9 @@
 const std = @import("std");
 const path = std.fs.path;
-const defaultValue = std.builtin.Type.StructField.defaultValue;
 const startsWith = std.mem.startsWith;
 const Allocator = std.mem.Allocator;
 const isAlphabetic = std.ascii.isAlphabetic;
 const fields = std.meta.fields;
-const eql = std.mem.eql;
-const indexOf = std.mem.indexOf;
 
 /// Subcommand parser. `Options` must be a tagged `union(enum)` where each variant
 /// names a subcommand and holds a struct of flags.
@@ -212,7 +209,7 @@ pub fn Chizel(comptime Options: type) type {
                     const tag = std.meta.activeTag(self.opts);
                     try buff.writer.print("Usage: {s} {s} [OPTIONS]\n\nOptions:\n", .{ self.prog, @tagName(tag) });
 
-                    inline for (@typeInfo(Options).@"union".fields) |ufield| {
+                    outer: inline for (@typeInfo(Options).@"union".fields) |ufield| {
                         if (tag == @field(std.meta.Tag(Options), ufield.name)) {
                             inline for (std.meta.fields(ufield.type)) |field| {
                                 const has_help = @hasDecl(ufield.type, "help") and
@@ -220,6 +217,7 @@ pub fn Chizel(comptime Options: type) type {
                                 const desc = if (has_help) @field(ufield.type.help, field.name) else "";
                                 try buff.writer.print("  --{s}  {s}\n", .{ field.name, desc });
                             }
+                            break :outer;
                         }
                     }
                 }
@@ -267,7 +265,7 @@ pub fn Chizel(comptime Options: type) type {
             const opts: Options = blk: {
                 if (cfg_help_enabled) {
                     if (self.iter.peek()) |peeked| {
-                        if (eql(u8, peeked, "--help") or eql(u8, peeked, "-h")) {
+                        if (strEql(peeked, "--help") or strEql(peeked, "-h")) {
                             _ = self.iter.next();
                             had_help = true;
                             had_root_help = true;
@@ -281,7 +279,7 @@ pub fn Chizel(comptime Options: type) type {
                 var result: Options = undefined;
                 var matched = false;
                 inline for (@typeInfo(Options).@"union".fields) |f| {
-                    if (!matched and eql(u8, subcmd, f.name)) {
+                    if (!matched and strEql(subcmd, f.name)) {
                         var sub: f.type = .{};
                         try self.parseStructOpts(
                             f.type,
@@ -319,11 +317,11 @@ pub fn Chizel(comptime Options: type) type {
             allocator: Allocator,
         ) !void {
             while (self.iter.next()) |opt| {
-                if (eql(u8, opt, "--")) {
+                if (strEql(opt, "--")) {
                     while (self.iter.next()) |pos| try positionals.append(allocator, pos);
                     break;
                 }
-                if (cfg_help_enabled and (eql(u8, opt, "--help") or eql(u8, opt, "-h"))) {
+                if (cfg_help_enabled and (strEql(opt, "--help") or strEql(opt, "-h"))) {
                     had_help.* = true;
                     // Tokens must be drained after a call to help
                     while (self.iter.next()) |_| {}
@@ -332,7 +330,7 @@ pub fn Chizel(comptime Options: type) type {
                 if (startsWith(u8, opt, "--")) {
                     var key = opt[2..];
                     var inline_val: ?[]const u8 = null;
-                    if (indexOf(u8, key, "=")) |i| {
+                    if (strIndexOfScalar(key, '=')) |i| {
                         inline_val = key[i + 1 ..];
                         key = key[0..i];
                     }
@@ -349,7 +347,7 @@ pub fn Chizel(comptime Options: type) type {
                     // if a '-' is found in the string.
                     // Each normalization requires a heap allocation so if we can
                     // skip for non-long options it's probably better.
-                    const normalized_key = if (std.mem.indexOfScalar(u8, key, '-') != null) blk: {
+                    const normalized_key = if (strIndexOfScalar(key, '-') != null) blk: {
                         const buff = try allocator.dupe(u8, key);
                         std.mem.replaceScalar(u8, buff, '-', '_');
                         break :blk buff;
@@ -357,7 +355,7 @@ pub fn Chizel(comptime Options: type) type {
 
                     var matched = false;
                     blk: inline for (std.meta.fields(T)) |field| {
-                        if (eql(u8, normalized_key, field.name)) {
+                        if (strEql(normalized_key, field.name)) {
                             const base_type = switch (@typeInfo(field.type)) {
                                 .optional => |o| o.child,
                                 else => field.type,
@@ -531,8 +529,6 @@ pub fn Chip(comptime Options: type) type {
     if (@typeInfo(Options) != .@"struct") @compileError("Options must be a `struct`");
 
     // Extract behaviour flags from Options.config at comptime, falling back to defaults.
-    // These must be in scope for the returned struct's parse() method regardless of
-    // whether Options is a struct or a tagged union.
     const cfg_help_enabled: bool = if (@hasDecl(Options, "config") and
         @hasField(@TypeOf(Options.config), "help_enabled"))
         Options.config.help_enabled
@@ -752,7 +748,7 @@ pub fn Chip(comptime Options: type) type {
             allocator: Allocator,
         ) !void {
             while (self.iter.next()) |opt| {
-                if (eql(u8, opt, "--")) {
+                if (strEql(opt, "--")) {
                     while (self.iter.next()) |pos| try positionals.append(allocator, pos);
                     break;
                 }
@@ -765,7 +761,7 @@ pub fn Chip(comptime Options: type) type {
                 if (startsWith(u8, opt, "--")) {
                     var key = opt[2..];
                     var inline_val: ?[]const u8 = null;
-                    if (indexOf(u8, key, "=")) |i| {
+                    if (strIndexOfScalar(key, '=')) |i| {
                         inline_val = key[i + 1 ..];
                         key = key[0..i];
                     }
@@ -773,7 +769,7 @@ pub fn Chip(comptime Options: type) type {
                     const negated = startsWith(u8, key, "no-");
                     if (negated) key = key[3..];
 
-                    const normalized_key = if (std.mem.indexOfScalar(u8, key, '-') != null) blk: {
+                    const normalized_key = if (strIndexOfScalar(key, '-') != null) blk: {
                         const buff = try allocator.dupe(u8, key);
                         std.mem.replaceScalar(u8, buff, '-', '_');
                         break :blk buff;
@@ -908,8 +904,12 @@ pub fn Chip(comptime Options: type) type {
     };
 }
 
+fn strIndexOfScalar(key: []const u8, needle: u8) ?usize {
+    return std.mem.indexOfScalar(u8, key, needle);
+}
+
 fn strEql(a: []const u8, b: []const u8) bool {
-    return eql(u8, a, b);
+    return std.mem.eql(u8, a, b);
 }
 
 // Type erased iterator used by the parser.
