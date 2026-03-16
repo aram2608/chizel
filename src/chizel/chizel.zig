@@ -71,7 +71,7 @@ pub fn Chizel(comptime Options: type) type {
 
     const cfg_help_enabled = configFlag(Options, "help_enabled", true);
     const cfg_allow_unknown = configFlag(Options, "allow_unknown", false);
-    const cfg_parse_env = configFlag(Options, "parse_env", false);
+    const cfg_parse_env = configFlag(Options, "parse_env", true);
 
     // Validation checks at comptime
     comptime {
@@ -397,7 +397,7 @@ pub fn Chip(comptime Options: type) type {
 
     const cfg_help_enabled = configFlag(Options, "help_enabled", true);
     const cfg_allow_unknown = configFlag(Options, "allow_unknown", false);
-    const cfg_parse_env = configFlag(Options, "parse_env", false);
+    const cfg_parse_env = configFlag(Options, "parse_env", true);
 
     // Require all Options fields to have defaults so initDefaults() is always safe.
     for (std.meta.fields(Options)) |field| {
